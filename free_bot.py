@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
-from telethon.tl.functions.account import UpdateProfileRequest
 import requests
 from dotenv import load_dotenv
 
@@ -122,8 +121,8 @@ def welcome_text():
 
 def dashboard_text(user, runtime_used):
     phone = user[1] if user and user[1] else "Not connected"
-    msg_status = "✅ Set" if user and user[4] else "❌ Not set"
-    campaign = "🟢 Live" if user and user[5] else "🔴 Stopped"
+    msg_status = "✅ Set" if user and user[5] else "❌ Not set"
+    campaign = "🟢 Live" if user and user[6] else "🔴 Stopped"
     hours_used = runtime_used / 3600
     hours_left = max(0, 8 - hours_used)
     return (
@@ -353,7 +352,7 @@ class Logger:
 # ============================================
 class UzeronFreeBot:
     def __init__(self):
-        self.bot = TelegramClient('free_bot_session', BOT_API_ID, BOT_API_HASH)
+        self.bot = TelegramClient(StringSession(), BOT_API_ID, BOT_API_HASH)
         self.db = Database()
         self.logger = Logger(LOGGER_BOT_TOKEN)
         self.tasks = {}
@@ -380,7 +379,7 @@ class UzeronFreeBot:
                     user = self.db.get_user(uid)
                     if not user or not user[4]:  # No session
                         continue
-                    if not user[11]:  # Branding not set yet
+                    if not user[11]:  # Branding not set yet, skip check
                         continue
                     # Check if branding still exists
                     asyncio.create_task(self.verify_branding(uid, user))
@@ -439,11 +438,13 @@ class UzeronFreeBot:
             await user_client.connect()
             me = await user_client.get_me()
 
-            # Update last name
+            # Update last name and bio
             current_last = me.last_name or ""
             if FREE_BRANDING_LASTNAME not in current_last:
                 new_last = f"{current_last} {FREE_BRANDING_LASTNAME}".strip()
-                await user_client(UpdateProfileRequest(
+                # Use raw API call for profile update
+                from telethon.tl.functions.account import UpdateProfileRequest as UPR
+                await user_client(UPR(
                     last_name=new_last,
                     about=FREE_BRANDING_BIO
                 ))
@@ -453,6 +454,8 @@ class UzeronFreeBot:
             return True
         except Exception as e:
             print(f"Set branding error for {uid}: {e}")
+            try: await user_client.disconnect()
+            except: pass
             return False
 
     def register_handlers(self):
@@ -563,6 +566,7 @@ class UzeronFreeBot:
                 phone = user[1] if user and user[1] else "Not connected"
                 connected = "✅ Connected" if user and user[4] else "❌ Not connected"
                 branding = "✅ Set" if user and user[11] else "⏳ Pending"
+                branding = "✅ Set" if user and user[11] else "⏳ Pending"
                 edit_msg(uid, mid,
                     f"👤 <b>My Account</b>\n\n"
                     f"📱 Phone: <code>{phone}</code>\n"
@@ -576,7 +580,7 @@ class UzeronFreeBot:
 
             elif data == 'status':
                 s = "🟢 Live" if user and user[5] else "🔴 Stopped"
-                msg_preview = (user[4][:60]+'...') if user and user[4] and len(user[4]) > 60 else (user[4] if user else "Not set") or "Not set"
+                msg_preview = (user[5][:60]+'...') if user and user[5] and len(user[5]) > 60 else (user[5] if user else "Not set") or "Not set"
                 hours_used = runtime / 3600
                 edit_msg(uid, mid,
                     f"📊 <b>Campaign Status</b>\n\n"
@@ -597,14 +601,10 @@ class UzeronFreeBot:
                                      "callback_data": "dashboard"}]]))
 
             elif data == 'startcampaign':
-                if not user or not user[4]:
+                if not user or not user[4]:  # no session
                     await event.answer("❌ Login first!", alert=True)
                     return
-                if not user[4]:
-                    await event.answer("❌ Set your message first!", alert=True)
-                    return
-                # Check message
-                if not user[6]:
+                if not user[5]:  # no promo message
                     await event.answer("❌ Set your ad message first!", alert=True)
                     return
                 if uid in self.tasks:
@@ -855,7 +855,7 @@ class UzeronFreeBot:
             user = self.db.get_user(uid)
             phone = user[1]
             session_string = user[4]
-            message = user[6]
+            message = user[5]
 
             user_client = TelegramClient(
                 StringSession(session_string), user[2], user[3])
@@ -913,7 +913,7 @@ class UzeronFreeBot:
 
                 # Refresh message
                 user = self.db.get_user(uid)
-                message = user[6]
+                message = user[5]
 
                 for group in groups:
                     if not self.db.get_user(uid)[5]: break
