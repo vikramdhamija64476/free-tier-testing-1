@@ -30,10 +30,10 @@ IST = pytz.timezone('Asia/Kolkata')
 # ============================================
 # FREE TIER LIMITS
 # ============================================
-FREE_MAX_GROUPS = 100        # Max groups to send to
-FREE_CYCLE_DELAY = 600       # 10 minutes between cycles (seconds)
-FREE_MSG_DELAY = 60          # 60 seconds between messages
-FREE_MAX_RUNTIME = 8 * 3600  # 8 hours max runtime per day (seconds)
+FREE_MAX_GROUPS = 100
+FREE_CYCLE_DELAY = 600
+FREE_MSG_DELAY = 60
+FREE_MAX_RUNTIME = 8 * 3600
 FREE_BRANDING_LASTNAME = "• via @Uzeron_AdsBot"
 FREE_BRANDING_BIO = "🚀 Free Automated Ads via @Uzeron_AdsBot | Get Premium: @Pandaysubscription"
 FREE_WARNINGS_BEFORE_BAN = 3
@@ -172,7 +172,6 @@ class Database:
     def init_db(self):
         conn = self.get_conn()
         c = conn.cursor()
-        # Free users table - separate from premium
         c.execute('''CREATE TABLE IF NOT EXISTS free_users (
             user_id BIGINT PRIMARY KEY,
             username TEXT,
@@ -250,7 +249,6 @@ class Database:
         conn.close()
 
     def get_runtime_today(self, user_id):
-        """Get runtime used today, reset if new day"""
         conn = self.get_conn()
         c = conn.cursor()
         c.execute('SELECT runtime_today, last_reset FROM free_users WHERE user_id=%s',
@@ -260,7 +258,6 @@ class Database:
         if not r:
             return 0
         runtime, last_reset = r
-        # Reset if new day (IST)
         today = datetime.now(IST).strftime('%Y-%m-%d')
         if last_reset != today:
             self.reset_runtime(user_id, today)
@@ -352,59 +349,70 @@ class Logger:
 # ============================================
 class UzeronFreeBot:
     def __init__(self):
-        self.bot = TelegramClient(StringSession(), BOT_API_ID, BOT_API_HASH)
+        # ── FIX #1: Save bot session string to env/file so it never
+        #    re-authenticates on restart (no more session conflicts with users)
+        bot_session_str = os.getenv('BOT_SESSION_STRING', '')
+        self.bot = TelegramClient(
+            StringSession(bot_session_str), BOT_API_ID, BOT_API_HASH)
         self.db = Database()
         self.logger = Logger(LOGGER_BOT_TOKEN)
         self.tasks = {}
         self.login_states = {}
         self.pending_message = {}
-        self.campaign_start_times = {}  # Track when campaign started
+        self.campaign_start_times = {}
 
     async def start(self):
         await self.bot.start(bot_token=FREE_BOT_TOKEN)
+
+        # ── FIX #1: After first start, print session string so you can save it
+        #    to BOT_SESSION_STRING env var on Railway — only needed once
+        session_str = self.bot.session.save()
+        if not os.getenv('BOT_SESSION_STRING'):
+            print("=" * 60)
+            print("IMPORTANT: Save this as BOT_SESSION_STRING in Railway env vars:")
+            print(session_str)
+            print("=" * 60)
+
         print("✓ Uzeron Free Bot started")
         self.register_handlers()
-        # Start branding checker
         asyncio.create_task(self.branding_checker())
         print("✓ Free Bot is live!")
         await self.bot.run_until_disconnected()
 
     async def branding_checker(self):
-        """Check every 30 mins if users still have branding"""
         while True:
-            await asyncio.sleep(1800)  # Check every 30 minutes
+            await asyncio.sleep(1800)
             try:
                 users = self.db.get_all_users()
                 for uid, username in users:
                     user = self.db.get_user(uid)
-                    if not user or not user[4]:  # No session
+                    if not user or not user[4]:
                         continue
-                    if not user[11]:  # Branding not set yet, skip check
+                    if not user[11]:
                         continue
-                    # Check if branding still exists
                     asyncio.create_task(self.verify_branding(uid, user))
             except Exception as e:
                 print(f"Branding checker error: {e}")
 
     async def verify_branding(self, uid, user):
-        """Verify user still has branding on their account"""
         try:
+            # ── FIX #1: Use BOT_API_ID/HASH for user clients, not user[2]/user[3]
+            #    Users no longer need to provide their own API credentials
             user_client = TelegramClient(
-                StringSession(user[4]), user[2], user[3])
+                StringSession(user[4]), BOT_API_ID, BOT_API_HASH)
             await user_client.connect()
+            if not await user_client.is_user_authorized():
+                await user_client.disconnect()
+                return
             me = await user_client.get_me()
             await user_client.disconnect()
 
             last_name = me.last_name or ""
-            bio_ok = True  # We can't easily check bio without extra API call
-
             if FREE_BRANDING_LASTNAME not in last_name:
-                # Branding removed! Add warning
                 count = self.db.add_warning(uid)
                 warnings_left = FREE_WARNINGS_BEFORE_BAN - count
 
                 if count >= FREE_WARNINGS_BEFORE_BAN:
-                    # Ban user
                     if uid in self.tasks:
                         self.tasks[uid].cancel()
                         del self.tasks[uid]
@@ -418,33 +426,44 @@ class UzeronFreeBot:
                         upgrade_keyboard())
                     self.logger.send_log(uid, f"🚫 User {uid} banned for removing branding")
                 else:
+                    # Re-apply branding
+                    user = self.db.get_user(uid)
+                    await self.set_branding(uid, user)
                     send_msg(uid,
                         f"⚠️ <b>Warning {count}/{FREE_WARNINGS_BEFORE_BAN} — Branding Removed!</b>\n\n"
                         f"You removed the required last name branding.\n\n"
-                        f"Please add back to your last name:\n"
-                        f"<code>{FREE_BRANDING_LASTNAME}</code>\n\n"
+                        f"It has been re-added automatically.\n\n"
                         f"⚠️ <b>{warnings_left} warning(s) left before ban!</b>\n\n"
                         f"Or upgrade to remove branding requirement:",
                         upgrade_keyboard())
-
         except Exception as e:
             print(f"Branding verify error for {uid}: {e}")
 
     async def set_branding(self, uid, user):
-        """Set branding on user's account"""
+        """
+        FIX #2: Use client.start() not just connect(), and use the correct
+        Telethon UpdateProfileRequest import path.
+        Also use BOT_API_ID/HASH so it matches the saved session.
+        """
         try:
             user_client = TelegramClient(
-                StringSession(user[4]), user[2], user[3])
-            await user_client.connect()
-            me = await user_client.get_me()
+                StringSession(user[4]), BOT_API_ID, BOT_API_HASH)
 
-            # Update last name and bio
+            # ── FIX #2: Must use start() not connect() for full authorization
+            await user_client.connect()
+            if not await user_client.is_user_authorized():
+                await user_client.disconnect()
+                print(f"Set branding: user {uid} not authorized")
+                return False
+
+            me = await user_client.get_me()
             current_last = me.last_name or ""
+
             if FREE_BRANDING_LASTNAME not in current_last:
                 new_last = f"{current_last} {FREE_BRANDING_LASTNAME}".strip()
-                # Use raw API call for profile update
-                from telethon.tl.functions.account import UpdateProfileRequest as UPR
-                await user_client(UPR(
+                # ── FIX #2: Correct import path for Telethon
+                from telethon.tl.functions.account import UpdateProfileRequest
+                await user_client(UpdateProfileRequest(
                     last_name=new_last,
                     about=FREE_BRANDING_BIO
                 ))
@@ -454,13 +473,13 @@ class UzeronFreeBot:
             return True
         except Exception as e:
             print(f"Set branding error for {uid}: {e}")
-            try: await user_client.disconnect()
-            except: pass
+            try:
+                await user_client.disconnect()
+            except:
+                pass
             return False
 
     def register_handlers(self):
-
-        # ── ADMIN COMMANDS ──────────────────────
 
         @self.bot.on(events.NewMessage(pattern='/addcode'))
         async def addcode(event):
@@ -509,14 +528,11 @@ class UzeronFreeBot:
                 f"🚀 Running Campaigns: {running}",
                 parse_mode='html')
 
-        # ── USER COMMANDS ────────────────────────
-
         @self.bot.on(events.NewMessage(pattern='/start'))
         async def start(event):
             uid = event.sender_id
             username = event.sender.username
 
-            # Check if banned
             if self.db.is_banned(uid):
                 send_msg(uid,
                     "🚫 <b>You are banned from the free tier.</b>\n\n"
@@ -525,13 +541,10 @@ class UzeronFreeBot:
                     upgrade_keyboard())
                 return
 
-            # Register user
             self.db.register_user(uid, username)
             user = self.db.get_user(uid)
             runtime = self.db.get_runtime_today(uid)
             send_msg(uid, dashboard_text(user, runtime), dashboard_keyboard())
-
-        # ── CALLBACK BUTTONS ─────────────────────
 
         @self.bot.on(events.CallbackQuery())
         async def callbacks(event):
@@ -566,7 +579,6 @@ class UzeronFreeBot:
                 phone = user[1] if user and user[1] else "Not connected"
                 connected = "✅ Connected" if user and user[4] else "❌ Not connected"
                 branding = "✅ Set" if user and user[11] else "⏳ Pending"
-                branding = "✅ Set" if user and user[11] else "⏳ Pending"
                 edit_msg(uid, mid,
                     f"👤 <b>My Account</b>\n\n"
                     f"📱 Phone: <code>{phone}</code>\n"
@@ -579,7 +591,7 @@ class UzeronFreeBot:
                     ]))
 
             elif data == 'status':
-                s = "🟢 Live" if user and user[5] else "🔴 Stopped"
+                s = "🟢 Live" if user and user[6] else "🔴 Stopped"
                 msg_preview = (user[5][:60]+'...') if user and user[5] and len(user[5]) > 60 else (user[5] if user else "Not set") or "Not set"
                 hours_used = runtime / 3600
                 edit_msg(uid, mid,
@@ -601,16 +613,15 @@ class UzeronFreeBot:
                                      "callback_data": "dashboard"}]]))
 
             elif data == 'startcampaign':
-                if not user or not user[4]:  # no session
+                if not user or not user[4]:
                     await event.answer("❌ Login first!", alert=True)
                     return
-                if not user[5]:  # no promo message
+                if not user[5]:
                     await event.answer("❌ Set your ad message first!", alert=True)
                     return
                 if uid in self.tasks:
                     await event.answer("⚠️ Campaign already running!", alert=True)
                     return
-                # Check runtime limit
                 runtime = self.db.get_runtime_today(uid)
                 if runtime >= FREE_MAX_RUNTIME:
                     edit_msg(uid, mid,
@@ -641,7 +652,6 @@ class UzeronFreeBot:
                 self.db.set_campaign_status(uid, 0)
                 self.tasks[uid].cancel()
                 del self.tasks[uid]
-                # Save runtime
                 if uid in self.campaign_start_times:
                     elapsed = (datetime.now() -
                               self.campaign_start_times[uid]).total_seconds()
@@ -658,16 +668,12 @@ class UzeronFreeBot:
                 if user and user[4]:
                     await event.answer("✅ Already logged in!", alert=True)
                     return
-                self.login_states[uid] = {'step': 'waiting_api'}
+                # ── FIX #1: No API_ID/HASH needed from user — skip straight to phone
+                self.login_states[uid] = {'step': 'waiting_phone'}
                 edit_msg(uid, mid,
                     "🔑 <b>Login to Your Telegram Account</b>\n\n"
-                    "<b>Step 1:</b> Get your API credentials\n"
-                    "• Go to: https://my.telegram.org/apps\n"
-                    "• Login and create an app\n"
-                    "• Copy your API_ID and API_HASH\n\n"
-                    "<b>Step 2:</b> Send them here:\n"
-                    "<code>API_ID API_HASH</code>\n\n"
-                    "Example: <code>12345678 abcdef1234567890</code>\n\n"
+                    "📱 Send your phone number:\n"
+                    "Example: <code>+917239879045</code>\n\n"
                     "<i>Type /cancel to go back</i>",
                     make_keyboard([[{"text": "❌ Cancel",
                                      "callback_data": "cancel_login"}]]))
@@ -690,8 +696,6 @@ class UzeronFreeBot:
                         dashboard_text(self.db.get_user(uid), 0),
                         dashboard_keyboard())
                 send_msg(uid, "✅ <b>Logged out successfully!</b>")
-
-        # ── GLOBAL MESSAGE HANDLER ───────────────
 
         @self.bot.on(events.NewMessage())
         async def global_handler(event):
@@ -716,7 +720,6 @@ class UzeronFreeBot:
                 send_msg(uid, dashboard_text(user, runtime), dashboard_keyboard())
                 return
 
-            # Pending setmessage
             if uid in self.pending_message and not text.startswith('/'):
                 del self.pending_message[uid]
                 self.db.set_promo_message(uid, text)
@@ -730,7 +733,6 @@ class UzeronFreeBot:
                     ]))
                 return
 
-            # Login flow
             if uid in self.login_states:
                 await self.handle_login(event, uid, text)
 
@@ -739,34 +741,19 @@ class UzeronFreeBot:
         state = self.login_states[uid]
         step = state.get('step')
 
-        if step == 'waiting_api':
-            try:
-                parts = text.strip().split()
-                if len(parts) != 2:
-                    send_msg(uid, "❌ Format: <code>API_ID API_HASH</code>")
-                    return
-                api_id = int(parts[0])
-                api_hash = parts[1]
-                state['api_id'] = api_id
-                state['api_hash'] = api_hash
-                state['step'] = 'waiting_phone'
-                send_msg(uid,
-                    "✅ <b>API credentials received!</b>\n\n"
-                    "📱 Now send your phone number:\n"
-                    "Example: <code>+911234567890</code>",
-                    make_keyboard([[{"text": "❌ Cancel",
-                                     "callback_data": "cancel_login"}]]))
-            except ValueError:
-                send_msg(uid, "❌ API_ID must be a number. Try again.")
-                del self.login_states[uid]
+        # ── FIX #1: Removed 'waiting_api' step entirely.
+        #    Login now starts directly at 'waiting_phone'.
+        #    Users don't need their own API credentials.
 
-        elif step == 'waiting_phone':
+        if step == 'waiting_phone':
             if not text.startswith('+'):
-                send_msg(uid, "❌ Must start with country code. Example: <code>+911234567890</code>")
+                send_msg(uid, "❌ Must start with country code. Example: <code>+917239879045</code>")
                 return
             try:
+                # ── FIX #1: Always use BOT_API_ID/BOT_API_HASH for user clients.
+                #    This ensures the session string is compatible and no conflicts occur.
                 user_client = TelegramClient(
-                    StringSession(), state['api_id'], state['api_hash'])
+                    StringSession(), BOT_API_ID, BOT_API_HASH)
                 await user_client.connect()
                 await user_client.send_code_request(text.strip())
                 state['client'] = user_client
@@ -812,13 +799,13 @@ class UzeronFreeBot:
         """Complete login, save session and set branding"""
         session = state['client'].session.save()
         phone = state['phone']
-        self.db.save_session(uid, phone, state['api_id'],
-                            state['api_hash'], session)
+        # ── FIX #1: Save with BOT_API_ID/BOT_API_HASH (api_id/api_hash cols
+        #    still stored for DB compatibility but always use bot creds at runtime)
+        self.db.save_session(uid, phone, BOT_API_ID, BOT_API_HASH, session)
         await state['client'].disconnect()
         del self.login_states[uid]
         self.logger.send_log(uid, f"✅ Free user logged in: {phone}")
 
-        # Set branding on account
         user = self.db.get_user(uid)
         send_msg(uid,
             "✅ <b>Login Successful!</b>\n\n"
@@ -850,21 +837,26 @@ class UzeronFreeBot:
                                   "callback_data": "dashboard"}]]))
 
     async def run_campaign(self, uid):
-        """Run free campaign with all limits enforced"""
         try:
             user = self.db.get_user(uid)
             phone = user[1]
             session_string = user[4]
             message = user[5]
 
+            # ── FIX #1: Use BOT_API_ID/HASH (matches how session was saved)
             user_client = TelegramClient(
-                StringSession(session_string), user[2], user[3])
+                StringSession(session_string), BOT_API_ID, BOT_API_HASH)
             await user_client.connect()
+
+            if not await user_client.is_user_authorized():
+                send_msg(uid, "❌ <b>Session expired!</b> Please /logout and login again.")
+                self.db.set_campaign_status(uid, 0)
+                await user_client.disconnect()
+                return
 
             dialogs = await user_client.get_dialogs()
             groups = [d for d in dialogs if d.is_group]
 
-            # Enforce 100 group limit
             if len(groups) > FREE_MAX_GROUPS:
                 groups = groups[:FREE_MAX_GROUPS]
 
@@ -885,15 +877,13 @@ class UzeronFreeBot:
             round_num = 0
             campaign_start = datetime.now()
 
-            while self.db.get_user(uid)[5]:
-                # Check 8 hour limit
+            while self.db.get_user(uid)[6]:  # is_active = index 6
                 runtime = self.db.get_runtime_today(uid)
                 elapsed_this_session = (
                     datetime.now() - campaign_start).total_seconds()
                 total_today = runtime + elapsed_this_session
 
                 if total_today >= FREE_MAX_RUNTIME:
-                    # Stop campaign - limit reached
                     self.db.set_campaign_status(uid, 0)
                     self.db.add_runtime(uid, int(elapsed_this_session))
                     if uid in self.campaign_start_times:
@@ -911,14 +901,12 @@ class UzeronFreeBot:
                 sent = 0
                 failed = 0
 
-                # Refresh message
                 user = self.db.get_user(uid)
                 message = user[5]
 
                 for group in groups:
-                    if not self.db.get_user(uid)[5]: break
+                    if not self.db.get_user(uid)[6]: break  # is_active
 
-                    # Re-check limit during sending
                     elapsed = (datetime.now() - campaign_start).total_seconds()
                     if runtime + elapsed >= FREE_MAX_RUNTIME:
                         break
@@ -935,7 +923,6 @@ class UzeronFreeBot:
                         failed += 1
                         await asyncio.sleep(10)
 
-                # Round summary
                 hours_left = max(0, 8 - (runtime + elapsed_this_session) / 3600)
                 send_msg(uid,
                     f"📊 <b>Round {round_num} Complete!</b>\n\n"
@@ -955,7 +942,6 @@ class UzeronFreeBot:
 
         except asyncio.CancelledError:
             print(f"[{uid}] Free campaign cancelled")
-            # Save runtime on cancel
             if uid in self.campaign_start_times:
                 elapsed = (datetime.now() -
                           self.campaign_start_times[uid]).total_seconds()
