@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError, SessionPasswordNeededError
+from telethon.tl.functions.account import UpdateProfileRequest
 import requests
 from dotenv import load_dotenv
 
@@ -22,6 +23,7 @@ BOT_API_HASH = os.getenv('API_HASH')
 FREE_BOT_TOKEN = os.getenv('FREE_BOT_TOKEN')
 LOGGER_BOT_TOKEN = os.getenv('LOGGER_BOT_TOKEN')
 ADMINS = [int(x.strip()) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
+
 SUPPORT_LINK = "https://t.me/Uzeron_Ads_support"
 CONTACT_USERNAME = "@Pandaysubscription"
 PREMIUM_BOT = "@Uzeron_AdsBot"
@@ -349,9 +351,9 @@ class Logger:
 # ============================================
 class UzeronFreeBot:
     def __init__(self):
-        bot_session_str = os.getenv('BOT_SESSION_STRING', '')
-        self.bot = TelegramClient(
-            StringSession(bot_session_str), BOT_API_ID, BOT_API_HASH)
+        # Bot uses bot_token auth only — NO StringSession for the bot itself.
+        # This avoids any phone-auth conflicts with user accounts.
+        self.bot = TelegramClient('bot_session', BOT_API_ID, BOT_API_HASH)
         self.db = Database()
         self.logger = Logger(LOGGER_BOT_TOKEN)
         self.tasks = {}
@@ -361,12 +363,6 @@ class UzeronFreeBot:
 
     async def start(self):
         await self.bot.start(bot_token=FREE_BOT_TOKEN)
-        session_str = self.bot.session.save()
-        if not os.getenv('BOT_SESSION_STRING'):
-            print("=" * 60)
-            print("IMPORTANT: Save this as BOT_SESSION_STRING in Railway env vars:")
-            print(session_str)
-            print("=" * 60)
         print("✓ Uzeron Free Bot started")
         self.register_handlers()
         asyncio.create_task(self.branding_checker())
@@ -389,6 +385,7 @@ class UzeronFreeBot:
                 print(f"Branding checker error: {e}")
 
     async def verify_branding(self, uid, user):
+        user_client = None
         try:
             user_client = TelegramClient(
                 StringSession(user[4]), BOT_API_ID, BOT_API_HASH)
@@ -396,12 +393,14 @@ class UzeronFreeBot:
             if not await user_client.is_user_authorized():
                 await user_client.disconnect()
                 return
+
             me = await user_client.get_me()
-            await user_client.disconnect()
             last_name = me.last_name or ""
+
             if FREE_BRANDING_LASTNAME not in last_name:
                 count = self.db.add_warning(uid)
                 warnings_left = FREE_WARNINGS_BEFORE_BAN - count
+
                 if count >= FREE_WARNINGS_BEFORE_BAN:
                     if uid in self.tasks:
                         self.tasks[uid].cancel()
@@ -416,8 +415,8 @@ class UzeronFreeBot:
                              upgrade_keyboard())
                     self.logger.send_log(uid, f"🚫 User {uid} banned for removing branding")
                 else:
-                    user = self.db.get_user(uid)
-                    await self.set_branding_with_session(uid, user[4])
+                    # Re-apply branding using existing connected client
+                    await self._apply_branding_with_client(user_client, uid)
                     send_msg(uid,
                              f"⚠️ <b>Warning {count}/{FREE_WARNINGS_BEFORE_BAN} — Branding Removed!</b>\n\n"
                              f"You removed the required last name branding.\n\n"
@@ -425,64 +424,67 @@ class UzeronFreeBot:
                              f"⚠️ <b>{warnings_left} warning(s) left before ban!</b>\n\n"
                              f"Or upgrade to remove branding requirement:",
                              upgrade_keyboard())
+
+            await user_client.disconnect()
         except Exception as e:
             print(f"Branding verify error for {uid}: {e}")
+            if user_client:
+                try:
+                    await user_client.disconnect()
+                except:
+                    pass
 
-    async def set_branding_with_session(self, uid, session_string):
+    async def _apply_branding_with_client(self, user_client, uid):
         """
-        Apply branding using a session string.
-        Used by branding_checker and _complete_login.
-        Always creates a fresh client from the given session string.
+        Apply branding using an already-connected authorized client.
+        This avoids the bug of creating a new client that isn't yet authorized.
+        """
+        try:
+            me = await user_client.get_me()
+            current_last = me.last_name or ""
+            if FREE_BRANDING_LASTNAME not in current_last:
+                new_last = f"{current_last} {FREE_BRANDING_LASTNAME}".strip()
+                # Trim to Telegram's 64 char last name limit
+                if len(new_last) > 64:
+                    new_last = FREE_BRANDING_LASTNAME
+                await user_client(UpdateProfileRequest(
+                    last_name=new_last,
+                    about=FREE_BRANDING_BIO
+                ))
+            self.db.set_branding(uid, 1)
+            return True
+        except Exception as e:
+            print(f"_apply_branding_with_client error for {uid}: {e}")
+            return False
+
+    async def set_branding(self, uid, session_string):
+        """
+        FIX — Branding now receives the session_string directly and creates
+        its own client, sets branding, then disconnects.
+        The caller must NOT have already disconnected this session.
         """
         user_client = None
         try:
-            from telethon.tl.functions.account import UpdateProfileRequest
-
             user_client = TelegramClient(
                 StringSession(session_string), BOT_API_ID, BOT_API_HASH)
             await user_client.connect()
 
             if not await user_client.is_user_authorized():
-                print(f"set_branding_with_session: user {uid} not authorized")
+                print(f"set_branding: user {uid} not authorized")
                 await user_client.disconnect()
                 return False
 
-            me = await user_client.get_me()
-            current_last = me.last_name or ""
-
-            # Build new last name — append branding only if not already there
-            if FREE_BRANDING_LASTNAME not in current_last:
-                new_last = f"{current_last} {FREE_BRANDING_LASTNAME}".strip()
-            else:
-                new_last = current_last  # already branded
-
-            await user_client(UpdateProfileRequest(
-                last_name=new_last,
-                about=FREE_BRANDING_BIO
-            ))
-
+            result = await self._apply_branding_with_client(user_client, uid)
             await user_client.disconnect()
-            self.db.set_branding(uid, 1)
-            print(f"✅ Branding set for user {uid}: last_name='{new_last}'")
-            return True
-
+            return result
         except Exception as e:
-            print(f"set_branding_with_session error for {uid}: {e}")
-            try:
-                if user_client:
+            print(f"set_branding error for {uid}: {e}")
+            if user_client:
+                try:
                     await user_client.disconnect()
-            except:
-                pass
+                except:
+                    pass
             return False
-
-    # Keep old set_branding for compatibility with branding_checker calls that pass user tuple
-    async def set_branding(self, uid, user):
-        """Wrapper — extracts session from user tuple and delegates."""
-        session_string = user[4] if user else None
-        if not session_string:
-            print(f"set_branding: no session for user {uid}")
-            return False
-        return await self.set_branding_with_session(uid, session_string)
 
     def register_handlers(self):
         @self.bot.on(events.NewMessage(pattern='/addcode'))
@@ -536,6 +538,7 @@ class UzeronFreeBot:
         async def start(event):
             uid = event.sender_id
             username = event.sender.username
+
             if self.db.is_banned(uid):
                 send_msg(uid,
                          "🚫 <b>You are banned from the free tier.</b>\n\n"
@@ -543,6 +546,7 @@ class UzeronFreeBot:
                          f"Upgrade to premium to continue:\n{CONTACT_USERNAME}",
                          upgrade_keyboard())
                 return
+
             self.db.register_user(uid, username)
             user = self.db.get_user(uid)
             runtime = self.db.get_runtime_today(uid)
@@ -624,6 +628,7 @@ class UzeronFreeBot:
                 if uid in self.tasks:
                     await event.answer("⚠️ Campaign already running!", alert=True)
                     return
+
                 runtime = self.db.get_runtime_today(uid)
                 if runtime >= FREE_MAX_RUNTIME:
                     edit_msg(uid, mid,
@@ -632,6 +637,7 @@ class UzeronFreeBot:
                              "⏳ Come back tomorrow or upgrade to Premium\nfor unlimited runtime!",
                              upgrade_keyboard())
                     return
+
                 self.db.set_campaign_status(uid, 1)
                 self.campaign_start_times[uid] = datetime.now()
                 task = asyncio.create_task(self.run_campaign(uid))
@@ -746,12 +752,15 @@ class UzeronFreeBot:
                 send_msg(uid, "❌ Must start with country code. Example: <code>+917239879045</code>")
                 return
             try:
+                # FIX: Use a unique session name per user+phone to avoid conflicts
+                # when the same number tries to log in again
                 user_client = TelegramClient(
                     StringSession(), BOT_API_ID, BOT_API_HASH)
                 await user_client.connect()
-                await user_client.send_code_request(text.strip())
+                sent = await user_client.send_code_request(text.strip())
                 state['client'] = user_client
                 state['phone'] = text.strip()
+                state['phone_code_hash'] = sent.phone_code_hash
                 state['step'] = 'waiting_code'
                 send_msg(uid,
                          "📨 <b>Code sent!</b>\n\nEnter the verification code:",
@@ -759,7 +768,8 @@ class UzeronFreeBot:
                                           "callback_data": "cancel_login"}]]))
             except Exception as e:
                 send_msg(uid, f"❌ Error: {e}\n\nTry again.")
-                del self.login_states[uid]
+                if uid in self.login_states:
+                    del self.login_states[uid]
 
         elif step == 'waiting_code':
             code = text.replace('-', '').replace(' ', '')
@@ -767,7 +777,12 @@ class UzeronFreeBot:
                 send_msg(uid, "❌ Enter only the numeric code")
                 return
             try:
-                await state['client'].sign_in(state['phone'], code)
+                # FIX: Pass phone_code_hash explicitly to avoid expiry issues
+                await state['client'].sign_in(
+                    state['phone'],
+                    code,
+                    phone_code_hash=state.get('phone_code_hash')
+                )
                 await self._complete_login(uid, state)
             except SessionPasswordNeededError:
                 state['step'] = 'waiting_password'
@@ -776,9 +791,18 @@ class UzeronFreeBot:
                          make_keyboard([[{"text": "❌ Cancel",
                                           "callback_data": "cancel_login"}]]))
             except Exception as e:
-                send_msg(uid, f"❌ Invalid code: {e}\n\nTry again.")
-                await state['client'].disconnect()
-                del self.login_states[uid]
+                err_str = str(e)
+                if 'expired' in err_str.lower() or 'PHONE_CODE_EXPIRED' in err_str:
+                    send_msg(uid,
+                             "❌ <b>Code expired!</b>\n\n"
+                             "Please tap Login again to request a fresh code.")
+                else:
+                    send_msg(uid, f"❌ Invalid code: {e}\n\nTry again.")
+                try:
+                    await state['client'].disconnect()
+                except: pass
+                if uid in self.login_states:
+                    del self.login_states[uid]
 
         elif step == 'waiting_password':
             try:
@@ -786,65 +810,46 @@ class UzeronFreeBot:
                 await self._complete_login(uid, state)
             except Exception as e:
                 send_msg(uid, f"❌ 2FA failed: {e}\n\nTry again.")
-                await state['client'].disconnect()
-                del self.login_states[uid]
+                try:
+                    await state['client'].disconnect()
+                except: pass
+                if uid in self.login_states:
+                    del self.login_states[uid]
 
     async def _complete_login(self, uid, state):
         """
-        Complete login: save session, then immediately apply branding
-        using the LIVE client (still connected) — no DB re-read needed.
+        FIX: Do NOT disconnect the client before setting branding.
+        We reuse the already-authorized client to set branding immediately,
+        then save the session string, then disconnect.
+        This avoids the race condition where a new client is created before
+        Telegram has propagated the session.
         """
-        from telethon.tl.functions.account import UpdateProfileRequest
-
-        live_client = state['client']
+        client = state['client']
         phone = state['phone']
 
-        # Save session string to DB FIRST
-        session_string = live_client.session.save()
-        self.db.save_session(uid, phone, BOT_API_ID, BOT_API_HASH, session_string)
-
-        # Clean up login state
-        del self.login_states[uid]
-
-        self.logger.send_log(uid, f"✅ Free user logged in: {phone}")
-
-        # Notify user
+        # Set branding FIRST while client is still connected & authorized
         send_msg(uid,
                  "✅ <b>Login Successful!</b>\n\n"
                  f"📱 Account: <code>{phone}</code>\n\n"
                  "🏷️ Setting up required branding on your account...\n"
                  "<i>This is required for free tier usage.</i>")
 
-        # ── KEY FIX: Apply branding using the LIVE client directly,
-        # no disconnect/reconnect cycle which was causing the failure.
-        branding_ok = False
-        try:
-            me = await live_client.get_me()
-            current_last = me.last_name or ""
+        branding_ok = await self._apply_branding_with_client(client, uid)
 
-            if FREE_BRANDING_LASTNAME not in current_last:
-                new_last = f"{current_last} {FREE_BRANDING_LASTNAME}".strip()
-            else:
-                new_last = current_last
+        # Now save session string (client is still connected)
+        session_string = client.session.save()
 
-            await live_client(UpdateProfileRequest(
-                last_name=new_last,
-                about=FREE_BRANDING_BIO
-            ))
+        # Disconnect after saving
+        await client.disconnect()
 
-            self.db.set_branding(uid, 1)
-            branding_ok = True
-            print(f"✅ Branding applied on login for {uid}: last_name='{new_last}'")
+        # Clean up state
+        if uid in self.login_states:
+            del self.login_states[uid]
 
-        except Exception as e:
-            print(f"Branding on login failed for {uid}: {e}")
+        # Save to DB
+        self.db.save_session(uid, phone, BOT_API_ID, BOT_API_HASH, session_string)
 
-        finally:
-            # Disconnect the live client only after branding is done
-            try:
-                await live_client.disconnect()
-            except:
-                pass
+        self.logger.send_log(uid, f"✅ Free user logged in: {phone}")
 
         if branding_ok:
             send_msg(uid,
@@ -880,7 +885,7 @@ class UzeronFreeBot:
             await user_client.connect()
 
             if not await user_client.is_user_authorized():
-                send_msg(uid, "❌ <b>Session expired!</b> Please /logout and login again.")
+                send_msg(uid, "❌ <b>Session expired!</b> Please logout and login again.")
                 self.db.set_campaign_status(uid, 0)
                 await user_client.disconnect()
                 return
@@ -973,6 +978,7 @@ class UzeronFreeBot:
                            self.campaign_start_times[uid]).total_seconds()
                 self.db.add_runtime(uid, int(elapsed))
                 del self.campaign_start_times[uid]
+
         except Exception as e:
             print(f"[{uid}] Free campaign error: {e}")
             self.db.set_campaign_status(uid, 0)
@@ -988,12 +994,14 @@ async def main():
     print("=" * 50)
     print(" 🆓 UZERON ADSBOT — Free Tier")
     print("=" * 50)
+
     missing = [v for v in ['API_ID', 'API_HASH', 'FREE_BOT_TOKEN',
                             'LOGGER_BOT_TOKEN', 'ADMIN_IDS', 'DATABASE_URL']
                if not os.getenv(v)]
     if missing:
         print(f"❌ Missing env vars: {', '.join(missing)}")
         sys.exit(1)
+
     print("✓ All credentials loaded")
     await UzeronFreeBot().start()
 
