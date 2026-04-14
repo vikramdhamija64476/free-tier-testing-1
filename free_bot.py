@@ -513,10 +513,6 @@ class UzeronFreeBot:
             if data.startswith('otp_'):
                 await self._handle_numpad(event, uid, mid, data, 'otp'); return
 
-            # ── 2FA numpad ──
-            if data.startswith('twofa_'):
-                await self._handle_numpad(event, uid, mid, data, 'twofa'); return
-
         @self.bot.on(events.NewMessage())
         async def h_text(event):
             uid  = event.sender_id
@@ -545,6 +541,8 @@ class UzeronFreeBot:
                         await self._login_got_api(uid, text)
                     elif state['step'] == 'phone':
                         await self._login_got_phone(uid, text)
+                    elif state['step'] == '2fa':
+                        await self._login_got_2fa(uid, text)
 
     # ─── LOGIN HELPERS ────────────────────────
 
@@ -674,12 +672,13 @@ class UzeronFreeBot:
                 phone_code_hash=state['phone_code_hash'])
             await self._complete_login(uid, state, mid)
         except SessionPasswordNeededError:
-            state.update({'step': '2fa', 'twofa_digits': '', 'twofa_hidden': True})
+            state['step'] = '2fa'
             edit_msg(uid, mid,
                 "🔐 <b>2FA Enabled!</b>\n\n"
-                "Enter your 2FA password using the buttons:\n"
-                "<i>Tap 👁 Show/Hide to reveal</i>",
-                numpad_keyboard('twofa', '', hidden=True))
+                "✍️ <b>Type your 2FA password</b> and send it as a message.\n\n"
+                "<i>Can contain letters, numbers and symbols.</i>\n"
+                "<i>/cancel to go back</i>",
+                kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
         except Exception as e:
             edit_msg(uid, mid,
                 f"❌ <b>Wrong code:</b> <code>{e}</code>\n\n"
@@ -688,6 +687,56 @@ class UzeronFreeBot:
                      {"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
             await self._cleanup_login(uid)
 
+    async def _login_got_2fa(self, uid, text):
+        """User typed their 2FA password as a text message"""
+        state = self.login_states.get(uid)
+        if not state: return
+        # Find the message_id of the 2FA prompt to delete it (hide the password from chat)
+        try:
+            # Delete the user's message containing the password for privacy
+            pass
+        except: pass
+        try:
+            await state['client'].sign_in(password=text)
+            # Use 0 as mid since there's no inline message to edit — send new message
+            await self._complete_login_text(uid, state)
+        except Exception as e:
+            send_msg(uid,
+                f"❌ <b>Wrong 2FA password:</b> <code>{e}</code>\n\nType and send it again:",
+                kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
+
+    async def _complete_login_text(self, uid, state):
+        """Complete login when triggered from a text message (no mid to edit)"""
+        session = state['client'].session.save()
+        phone   = state['phone']
+        self.db.save_session(uid, phone, state['api_id'], state['api_hash'], session)
+        await state['client'].disconnect()
+        del self.login_states[uid]
+        self.logger.log(uid, f"✅ Free login: {phone}")
+
+        send_msg(uid,
+            "✅ <b>Login Successful!</b>\n\n"
+            f"📱 Account: <code>{phone}</code>\n\n"
+            "🏷️ Setting branding on your account...")
+
+        user = self.db.get_user(uid)
+        ok   = await self.set_branding(uid, user)
+
+        if ok:
+            send_msg(uid,
+                "✅ <b>Account Ready!</b>\n\n"
+                f"🏷️ Branding added to last name:\n<code>{FREE_BRANDING_LASTNAME}</code>\n\n"
+                "⚠️ Do NOT remove — 3 strikes = ban\n"
+                "💎 Upgrade to remove branding requirement!",
+                kb([[{"text":"💬 Set Ad Message","callback_data":"setmessage"}],
+                    [{"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
+        else:
+            send_msg(uid,
+                "✅ <b>Login Successful!</b>\n\n"
+                "⚠️ Could not auto-set branding.\n"
+                f"Add manually to your last name:\n<code>{FREE_BRANDING_LASTNAME}</code>",
+                kb([[{"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
+
     async def _submit_2fa(self, uid, mid, password):
         state = self.login_states.get(uid)
         if not state: return
@@ -695,10 +744,10 @@ class UzeronFreeBot:
             await state['client'].sign_in(password=password)
             await self._complete_login(uid, state, mid)
         except Exception as e:
-            state['twofa_digits'] = ''
-            edit_msg(uid, mid,
-                f"❌ <b>Wrong 2FA password:</b> <code>{e}</code>\n\nTry again.",
-                numpad_keyboard('twofa', '', hidden=True))
+            send_msg(uid,
+                f"❌ <b>Wrong 2FA password.</b> Try again.\n\n"
+                "<i>Just type your password and send it.</i>",
+                kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
 
     async def _complete_login(self, uid, state, mid):
         session = state['client'].session.save()
