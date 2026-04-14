@@ -31,9 +31,12 @@ FREE_MAX_GROUPS          = 100
 FREE_CYCLE_DELAY         = 600
 FREE_MSG_DELAY           = 60
 FREE_MAX_RUNTIME         = 8 * 3600
-FREE_BRANDING_LASTNAME   = "• via @Uzeron_AdsBot"
-FREE_BRANDING_BIO        = "🚀 Free Automated Ads via @Uzeron_AdsBot | Get Premium: @Pandaysubscription"
+FREE_BRANDING_TAG        = "• via @Uzeron_AdsBot"   # appended to last name
+FREE_BRANDING_BIO        = "Free Automated ads • via @Uzeron_AdsBot"
 FREE_WARNINGS_BEFORE_BAN = 3
+
+# Keep this alias so rest of code that checks for tag still works
+FREE_BRANDING_LASTNAME = FREE_BRANDING_TAG
 
 # ─────────────────────────────────────────────
 # BOT API HELPERS
@@ -316,20 +319,42 @@ class UzeronFreeBot:
 
     async def apply_branding_on_live_client(self, uid, live_client):
         """
-        Apply last name + bio on an ALREADY CONNECTED & AUTHORIZED client.
-        Called right after sign_in() so the connection is guaranteed live.
+        Apply branding on an ALREADY CONNECTED & AUTHORIZED client.
+        - Last name: appends tag to whatever name user already has
+          e.g. "Rahul Kumar" -> "Rahul Kumar • via @Uzeron_AdsBot"
+          e.g. "Rahul"       -> "Rahul • via @Uzeron_AdsBot"
+          e.g. (empty)       -> "• via @Uzeron_AdsBot"
+        - Bio: always replaced with FREE_BRANDING_BIO
         Never disconnects the client — caller is responsible.
         """
         try:
+            me = await live_client.get_me()
+            cur_last = (me.last_name or "").strip()
+
+            # Remove old tag first to avoid duplicates on re-login
+            if FREE_BRANDING_TAG in cur_last:
+                cur_last = cur_last.replace(FREE_BRANDING_TAG, "").strip()
+
+            # Append tag
+            new_last = f"{cur_last} {FREE_BRANDING_TAG}".strip() if cur_last else FREE_BRANDING_TAG
+
+            print(f"Branding uid={uid}: last='{me.last_name}' -> '{new_last}' | bio -> '{FREE_BRANDING_BIO}'")
+
             await live_client(UpdateProfileRequest(
-                last_name=FREE_BRANDING_LASTNAME,
+                last_name=new_last,
                 about=FREE_BRANDING_BIO
             ))
             self.db.set_branding(uid, 1)
-            print(f"✅ Branding applied for uid={uid}")
+            print(f"OK Branding applied for uid={uid}")
             return True
+
         except Exception as e:
-            print(f"apply_branding_on_live_client uid={uid}: {e}")
+            err_msg = f"apply_branding uid={uid} ERROR: {type(e).__name__}: {e}"
+            print(err_msg)
+            try:
+                if ADMINS:
+                    self.logger.log(ADMINS[0], f"Branding failed uid={uid}\n<code>{type(e).__name__}: {e}</code>")
+            except: pass
             return False
 
     async def set_branding(self, uid, session_str, api_id, api_hash):
