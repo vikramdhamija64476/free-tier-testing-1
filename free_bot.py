@@ -22,7 +22,6 @@ FREE_BOT_TOKEN   = os.getenv('FREE_BOT_TOKEN')
 LOGGER_BOT_TOKEN = os.getenv('LOGGER_BOT_TOKEN')
 ADMINS           = [int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip()]
 
-# ── Links ──────────────────────────────────────────────────────────────────
 CHANNEL_LINK      = "https://t.me/Uzeron_AdsBot"
 COMMUNITY_LINK    = "https://t.me/UzeronCommunity"
 HOW_TO_USE_LINK   = "https://t.me/Uzeron_Ads"
@@ -30,11 +29,9 @@ SUPPORT_LINK      = "https://t.me/Uzeron_Ads_support"
 CONTACT_USERNAME  = "@Pandaysubscription"
 PREMIUM_BOT       = "@Uzeron_AdsBot"
 
-# ── IMPORTANT: These must be the exact @usernames of the channel/group ──────
-# The channel @Uzeron_AdsBot is a CHANNEL (not the bot itself)
-# The bot just happens to have the same name — usernames are different entities
-CHANNEL_USERNAME   = "Uzeron_AdsBot"    # channel username (no @)
-COMMUNITY_USERNAME = "UzeronCommunity"  # group username   (no @)
+# Exact usernames (no @) — used for getChatMember
+CHANNEL_USERNAME   = "Uzeron_AdsBot"
+COMMUNITY_USERNAME = "UzeronCommunity"
 
 IST = pytz.timezone('Asia/Kolkata')
 
@@ -76,44 +73,44 @@ def edit_msg(chat_id, msg_id, text, keyboard=None):
 def kb(buttons):
     return {"inline_keyboard": buttons}
 
-# ── Membership check ────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════
+# MEMBERSHIP CHECK
+# ═══════════════════════════════════════════════════════════════════════════
 def check_member(user_id, chat_username):
     """
-    Returns True if user is member/admin/creator of the chat.
+    Returns (is_member: bool, error: str|None)
     
-    KEY FIX: We pass @username as the chat_id.
-    getChatMember works for PUBLIC channels/groups when the bot is admin.
-    If it errors (e.g. bot not admin, private chat), we fail-OPEN so the
-    bot doesn't break — log the real error for debugging.
+    IMPORTANT NOTES on getChatMember:
+    - For PUBLIC channels: works without bot being admin
+    - For PUBLIC groups: works without bot being admin  
+    - For PRIVATE channels/groups: bot MUST be admin with correct permissions
+    - If user is NOT a member of a channel, Telegram returns status="left" 
+      NOT an error — so we must check the status field
+    - If the chat doesn't exist or bot has no access, it returns ok=False
     """
     r = _bot("getChatMember", {
         "chat_id": f"@{chat_username}",
         "user_id": user_id
     })
     
-    # Debug: print full response so we can see what Telegram returns
-    result = r.get("result", {})
-    error  = r.get("description", "")
-    status = result.get("status", "")
+    print(f"getChatMember @{chat_username} uid={user_id}: {r}")
     
-    print(f"check_member @{chat_username} uid={user_id}: status={status!r} err={error!r}")
+    if not r.get("ok"):
+        err = r.get("description", "unknown error")
+        return False, err
     
-    if r.get("ok"):
-        return status in ("member", "administrator", "creator")
-    
-    # If error contains "user not found" or "chat not found" — they haven't joined
-    if "not found" in error.lower() or "not a member" in error.lower():
-        return False
-    
-    # For other errors (bot not admin, etc.) — fail open so bot doesn't break
-    print(f"WARNING: getChatMember failed for @{chat_username}: {error} — failing open")
-    return True
+    status = r.get("result", {}).get("status", "left")
+    is_member = status in ("member", "administrator", "creator", "restricted")
+    return is_member, None
 
 def user_has_joined(user_id):
-    """Returns (channel_ok, community_ok)."""
-    ch  = check_member(user_id, CHANNEL_USERNAME)
-    com = check_member(user_id, COMMUNITY_USERNAME)
-    return ch, com
+    """
+    Returns (channel_ok, community_ok, channel_err, community_err)
+    All errors are None if no error occurred.
+    """
+    ch_ok,  ch_err  = check_member(user_id, CHANNEL_USERNAME)
+    com_ok, com_err = check_member(user_id, COMMUNITY_USERNAME)
+    return ch_ok, com_ok, ch_err, com_err
 
 # ═══════════════════════════════════════════════════════════════════════════
 # KEYBOARDS
@@ -127,7 +124,7 @@ def force_join_keyboard():
 
 def welcome_keyboard():
     return kb([
-        [{"text": "🚀 Open Dashboard",       "callback_data": "dashboard"}],
+        [{"text": "🚀 Open Dashboard",        "callback_data": "dashboard"}],
         [{"text": "📢 Updates",  "url": CHANNEL_LINK},
          {"text": "🆘 Support",  "url": SUPPORT_LINK}],
         [{"text": "📖 How To Use", "url": HOW_TO_USE_LINK}],
@@ -136,17 +133,17 @@ def welcome_keyboard():
 
 def dashboard_keyboard():
     return kb([
-        [{"text": "👤 My Account",    "callback_data": "account"},
-         {"text": "📊 Status",        "callback_data": "status"}],
-        [{"text": "💬 Set Message",   "callback_data": "setmessage"},
-         {"text": "⏱️ 60s | 10m",    "callback_data": "delay_info"}],
-        [{"text": "🚀 Start Campaign","callback_data": "startcampaign"},
-         {"text": "🛑 Stop Campaign", "callback_data": "stopcampaign"}],
-        [{"text": "🔑 Login",         "callback_data": "login"},
-         {"text": "💎 Upgrade",       "callback_data": "upgrade"}],
-        [{"text": "📢 Updates",       "url": CHANNEL_LINK},
-         {"text": "📖 How To Use",    "url": HOW_TO_USE_LINK}],
-        [{"text": "🚪 Logout",        "callback_data": "logout"}],
+        [{"text": "👤 My Account",     "callback_data": "account"},
+         {"text": "📊 Status",         "callback_data": "status"}],
+        [{"text": "💬 Set Message",    "callback_data": "setmessage"},
+         {"text": "⏱️ 60s | 10m",     "callback_data": "delay_info"}],
+        [{"text": "🚀 Start Campaign", "callback_data": "startcampaign"},
+         {"text": "🛑 Stop Campaign",  "callback_data": "stopcampaign"}],
+        [{"text": "🔑 Login",          "callback_data": "login"},
+         {"text": "💎 Upgrade",        "callback_data": "upgrade"}],
+        [{"text": "📢 Updates",        "url": CHANNEL_LINK},
+         {"text": "📖 How To Use",     "url": HOW_TO_USE_LINK}],
+        [{"text": "🚪 Logout",         "callback_data": "logout"}],
     ])
 
 def upgrade_keyboard():
@@ -154,14 +151,14 @@ def upgrade_keyboard():
         [{"text": f"💎 Upgrade → {CONTACT_USERNAME}", "url": "https://t.me/Pandaysubscription"}],
         [{"text": "📢 Updates", "url": CHANNEL_LINK},
          {"text": "🆘 Support", "url": SUPPORT_LINK}],
-        [{"text": "🔙 Back",    "callback_data": "dashboard"}],
+        [{"text": "🔙 Back", "callback_data": "dashboard"}],
     ])
 
 def back_keyboard():
     return kb([[{"text": "🏠 Dashboard", "callback_data": "dashboard"}]])
 
-def numpad_keyboard(prefix, entered="", hidden=False):
-    display = ("•" * len(entered)) if hidden else (entered or "—")
+def numpad_keyboard(prefix, entered=""):
+    display = entered or "—"
     rows = [
         [{"text": f"📟  {display}  ", "callback_data": f"{prefix}_display"}],
         [{"text":"1","callback_data":f"{prefix}_1"},
@@ -176,21 +173,24 @@ def numpad_keyboard(prefix, entered="", hidden=False):
         [{"text":"⌫ Del",     "callback_data":f"{prefix}_del"},
          {"text":"0",         "callback_data":f"{prefix}_0"},
          {"text":"✅ Submit", "callback_data":f"{prefix}_submit"}],
+        [{"text":"❌ Cancel Login","callback_data":"cancel_login"}],
     ]
-    rows.append([{"text":"❌ Cancel Login","callback_data":"cancel_login"}])
     return kb(rows)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TEXTS
 # ═══════════════════════════════════════════════════════════════════════════
-def force_join_text():
-    return (
+def force_join_text(missing=None):
+    base = (
         "👋 <b>Welcome to Uzeron AdsBot!</b>\n\n"
         "To unlock the bot, please join both:\n\n"
         "📢 <b>Updates Channel</b> — latest news & updates\n"
         "👥 <b>Community Group</b> — support & discussion\n\n"
         "<i>After joining both, tap the button below.</i>"
     )
+    if missing:
+        base += "\n\n❌ <b>Still not joined:</b>\n" + "\n".join(f"• {m}" for m in missing)
+    return base
 
 def welcome_text():
     return (
@@ -393,6 +393,8 @@ class UzeronFreeBot:
         self.pending_message      = {}
         self.login_states         = {}
         self.broadcast_state      = {}
+        # Cache: uid -> True/False so passing users don't re-check every callback
+        self._join_cache          = {}
 
     async def start(self):
         await self.bot.start(bot_token=FREE_BOT_TOKEN)
@@ -408,21 +410,56 @@ class UzeronFreeBot:
         await self.bot.run_until_disconnected()
 
     # ─── FORCE-JOIN ───────────────────────────────────────────────────────
-    def _force_join_check(self, uid):
+    def _check_join(self, uid):
         """
-        Returns True if user has joined both required chats.
-        Fails OPEN on API errors to avoid breaking the bot.
+        Returns (all_joined: bool, missing: list[str], has_api_error: bool)
+        
+        If getChatMember returns an API error (not a "user not found" error),
+        it means the bot can't check — we SKIP the gate (fail open) so the
+        bot doesn't permanently block users due to a config issue.
         """
-        try:
-            ch, com = user_has_joined(uid)
-            return ch and com
-        except Exception as e:
-            print(f"force_join_check error uid={uid}: {e}")
-            return True  # fail open
+        # Admins always pass
+        if uid in ADMINS:
+            return True, [], False
+
+        # Use cache for users who already passed
+        if self._join_cache.get(uid):
+            return True, [], False
+
+        missing = []
+        has_api_error = False
+
+        ch_ok, ch_err = check_member(uid, CHANNEL_USERNAME)
+        com_ok, com_err = check_member(uid, COMMUNITY_USERNAME)
+
+        # If BOTH checks return API errors (bot not admin, chat not found, etc.)
+        # fail open — don't block the user
+        if ch_err and com_err:
+            print(f"WARNING: Both membership checks failed for uid={uid}. "
+                  f"ch_err={ch_err!r} com_err={com_err!r} — failing open")
+            self._join_cache[uid] = True
+            return True, [], True
+
+        if not ch_ok:
+            if ch_err:
+                # API error on channel — can't check, skip it
+                print(f"WARNING: Channel check error uid={uid}: {ch_err!r} — skipping channel gate")
+            else:
+                missing.append("📢 Updates Channel")
+
+        if not com_ok:
+            if com_err:
+                print(f"WARNING: Community check error uid={uid}: {com_err!r} — skipping community gate")
+            else:
+                missing.append("👥 Community Group")
+
+        all_joined = len(missing) == 0
+        if all_joined:
+            self._join_cache[uid] = True
+        return all_joined, missing, has_api_error
 
     # ─── BRANDING ─────────────────────────────────────────────────────────
     async def apply_branding_on_live_client(self, uid, live_client):
-        """Apply branding on an already-connected authorized client."""
         try:
             me       = await live_client.get_me()
             cur_last = (me.last_name or "").strip()
@@ -443,7 +480,6 @@ class UzeronFreeBot:
             return False
 
     async def set_branding(self, uid, session_str, api_id, api_hash):
-        """Re-open session for branding — used by branding_checker only."""
         c = None
         try:
             c = TelegramClient(StringSession(session_str), api_id, api_hash)
@@ -514,7 +550,8 @@ class UzeronFreeBot:
         async def h_users(event):
             if event.sender_id not in ADMINS: return
             ul  = self.db.get_all_users()
-            msg = f"👥 <b>Free Users ({len(ul)}):</b>\n\n" +                   "".join(f"• {'@'+u if u else str(i)}\n" for i,u in ul)
+            msg = f"👥 <b>Free Users ({len(ul)}):</b>\n\n" + \
+                  "".join(f"• {'@'+u if u else str(i)}\n" for i,u in ul)
             await event.reply(msg or "No users.", parse_mode='html')
 
         @self.bot.on(events.NewMessage(pattern='/ban'))
@@ -544,15 +581,36 @@ class UzeronFreeBot:
                 "📣 <b>Broadcast</b>\n\nSend the message to broadcast to all users.\n<i>/cancel to abort</i>",
                 parse_mode='html')
 
+        @self.bot.on(events.NewMessage(pattern='/checkjoin'))
+        async def h_checkjoin(event):
+            """Admin debug command to test membership check."""
+            if event.sender_id not in ADMINS: return
+            uid = event.sender_id
+            ch_ok, ch_err  = check_member(uid, CHANNEL_USERNAME)
+            com_ok, com_err = check_member(uid, COMMUNITY_USERNAME)
+            await event.reply(
+                f"🔍 <b>Membership Check Debug</b>\n\n"
+                f"Your UID: <code>{uid}</code>\n\n"
+                f"📢 Channel (@{CHANNEL_USERNAME}):\n"
+                f"  Result: {'✅ Member' if ch_ok else '❌ Not member'}\n"
+                f"  Error: <code>{ch_err or 'None'}</code>\n\n"
+                f"👥 Community (@{COMMUNITY_USERNAME}):\n"
+                f"  Result: {'✅ Member' if com_ok else '❌ Not member'}\n"
+                f"  Error: <code>{com_err or 'None'}</code>",
+                parse_mode='html')
+
         @self.bot.on(events.NewMessage(pattern='/start'))
         async def h_start(event):
             uid = event.sender_id
             if self.db.is_banned(uid):
                 send_msg(uid, "🚫 You are banned.", upgrade_keyboard()); return
             self.db.register_user(uid, event.sender.username)
+
             # Force-join gate
-            if not self._force_join_check(uid):
-                send_msg(uid, force_join_text(), force_join_keyboard()); return
+            all_joined, missing, api_error = self._check_join(uid)
+            if not all_joined:
+                send_msg(uid, force_join_text(missing), force_join_keyboard()); return
+
             send_msg(uid, welcome_text(), welcome_keyboard())
 
         @self.bot.on(events.CallbackQuery())
@@ -567,29 +625,26 @@ class UzeronFreeBot:
             user    = self.db.get_user(uid)
             runtime = self.db.get_runtime_today(uid) if user else 0
 
-            # ── Force-join "Try Again" ──────────────────────────────────
+            # ── Force-join "I've Joined" button ──────────────────────────
             if data == 'check_join':
                 await event.answer()
-                if self._force_join_check(uid):
-                    # Passed! Show welcome screen
+                # Clear cache so we re-check fresh
+                self._join_cache.pop(uid, None)
+                all_joined, missing, api_error = self._check_join(uid)
+                if all_joined:
                     edit_msg(uid, mid, welcome_text(), welcome_keyboard())
                 else:
-                    ch, com = user_has_joined(uid)
-                    missing = []
-                    if not ch:  missing.append("📢 Updates Channel")
-                    if not com: missing.append("👥 Community Group")
-                    edit_msg(uid, mid,
-                        force_join_text() + "\n\n❌ <b>Still not joined:</b>\n" +
-                        "\n".join(f"• {m}" for m in missing),
-                        force_join_keyboard())
+                    edit_msg(uid, mid, force_join_text(missing), force_join_keyboard())
                 return
 
-            # ── All callbacks require join ──────────────────────────────
-            if not self._force_join_check(uid):
+            # ── All other callbacks: check join (use cache) ───────────────
+            all_joined, missing, api_error = self._check_join(uid)
+            if not all_joined:
                 await event.answer("❌ Join channel & community first!", alert=True)
-                edit_msg(uid, mid, force_join_text(), force_join_keyboard()); return
+                edit_msg(uid, mid, force_join_text(missing), force_join_keyboard())
+                return
 
-            # ── Nav ─────────────────────────────────────────────────────
+            # ── Dashboard & nav ───────────────────────────────────────────
             if data == 'dashboard':
                 await event.answer()
                 edit_msg(uid, mid, dashboard_text(user, runtime), dashboard_keyboard()); return
@@ -680,7 +735,7 @@ class UzeronFreeBot:
                 self.login_states[uid] = {'step': 'api'}
                 edit_msg(uid, mid,
                     "🔑 <b>Login — Step 1/3: API Credentials</b>\n\n"
-                    "Send your credentials in one message:\n"
+                    "Send your credentials in <b>one message</b>:\n"
                     "<code>API_ID API_HASH</code>\n\n"
                     "📌 Get from: <a href='https://my.telegram.org/apps'>my.telegram.org/apps</a>\n"
                     "Example: <code>12345678 abc123def456</code>\n\n"
@@ -703,8 +758,8 @@ class UzeronFreeBot:
 
             if text == '/cancel':
                 await self._cleanup_login(uid)
-                if uid in self.pending_message:  del self.pending_message[uid]
-                if uid in self.broadcast_state:  del self.broadcast_state[uid]
+                if uid in self.pending_message: del self.pending_message[uid]
+                if uid in self.broadcast_state: del self.broadcast_state[uid]
                 user    = self.db.get_user(uid)
                 runtime = self.db.get_runtime_today(uid) if user else 0
                 send_msg(uid, dashboard_text(user, runtime), dashboard_keyboard()); return
@@ -789,14 +844,16 @@ class UzeronFreeBot:
             await event.answer(); return
         state  = self.login_states[uid]
         action = data[len(prefix)+1:]
-        key    = 'otp_digits' if prefix == 'otp' else 'twofa_digits'
+        key    = 'otp_digits'
         if key not in state: state[key] = ''
 
         if   action == 'display': await event.answer(); return
-        elif action == 'del':     state[key] = state[key][:-1]; await event.answer("⌫")
+        elif action == 'del':
+            state[key] = state[key][:-1]; await event.answer("⌫")
         elif action == 'submit':
             await event.answer()
-            if not state[key]: await event.answer("❌ Nothing entered!", alert=True); return
+            if not state[key]:
+                await event.answer("❌ Nothing entered!", alert=True); return
             await self._submit_otp(uid, mid, state[key]); return
         elif action.isdigit():
             if len(state[key]) < 10: state[key] += action
@@ -805,10 +862,9 @@ class UzeronFreeBot:
             await event.answer(); return
 
         digits = state[key]
-        disp   = digits or "—"
         try:
             edit_msg(uid, mid,
-                f"📨 <b>Enter OTP:</b>\n\nCode so far: <code>{disp}</code>",
+                f"📨 <b>Enter OTP:</b>\n\nCode so far: <code>{digits or '—'}</code>",
                 numpad_keyboard(prefix, digits))
         except: pass
 
@@ -845,7 +901,6 @@ class UzeronFreeBot:
                 kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
 
     async def _complete_login(self, uid, state, mid):
-        """Persist session → notify → apply branding on live client → disconnect."""
         live_client = state['client']
         phone    = state['phone']
         api_id   = state['api_id']
@@ -864,6 +919,7 @@ class UzeronFreeBot:
         if mid: edit_msg(uid, mid, notify)
         else:   send_msg(uid, notify)
 
+        # Apply branding on the LIVE still-connected client
         ok = await self.apply_branding_on_live_client(uid, live_client)
 
         try: await live_client.disconnect()
@@ -888,7 +944,6 @@ class UzeronFreeBot:
     async def run_campaign(self, uid):
         try:
             user   = self.db.get_user(uid)
-            phone  = user[1]
             client = TelegramClient(StringSession(user[4]), user[2], user[3])
             await client.connect()
             if not await client.is_user_authorized():
