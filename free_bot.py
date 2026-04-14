@@ -15,34 +15,43 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL    = os.getenv('DATABASE_URL')
-BOT_API_ID      = int(os.getenv('API_ID'))
-BOT_API_HASH    = os.getenv('API_HASH')
-FREE_BOT_TOKEN  = os.getenv('FREE_BOT_TOKEN')
-LOGGER_BOT_TOKEN= os.getenv('LOGGER_BOT_TOKEN')
-ADMINS          = [int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip()]
+DATABASE_URL     = os.getenv('DATABASE_URL')
+BOT_API_ID       = int(os.getenv('API_ID'))
+BOT_API_HASH     = os.getenv('API_HASH')
+FREE_BOT_TOKEN   = os.getenv('FREE_BOT_TOKEN')
+LOGGER_BOT_TOKEN = os.getenv('LOGGER_BOT_TOKEN')
+ADMINS           = [int(x.strip()) for x in os.getenv('ADMIN_IDS','').split(',') if x.strip()]
 
+# ── Links ──────────────────────────────────────
+CHANNEL_LINK      = "https://t.me/Uzeron_AdsBot"       # updates channel  (must join)
+COMMUNITY_LINK    = "https://t.me/UzeronCommunity"      # community group  (must join)
+HOW_TO_USE_LINK   = "https://t.me/Uzeron_Ads"           # how-to channel
 SUPPORT_LINK      = "https://t.me/Uzeron_Ads_support"
 CONTACT_USERNAME  = "@Pandaysubscription"
 PREMIUM_BOT       = "@Uzeron_AdsBot"
-IST               = pytz.timezone('Asia/Kolkata')
 
+# ── Telegram channel/group usernames for membership check ──
+# Strip https://t.me/ and use just the username
+CHANNEL_USERNAME   = "Uzeron_AdsBot"       # public channel username (no @)
+COMMUNITY_USERNAME = "UzeronCommunity"     # public group username   (no @)
+
+IST = pytz.timezone('Asia/Kolkata')
+
+# ── Free tier limits ───────────────────────────
 FREE_MAX_GROUPS          = 100
-FREE_CYCLE_DELAY         = 600
-FREE_MSG_DELAY           = 60
-FREE_MAX_RUNTIME         = 8 * 3600
-FREE_BRANDING_TAG        = "• via @Uzeron_AdsBot"   # appended to last name
+FREE_CYCLE_DELAY         = 600       # 10 min between rounds
+FREE_MSG_DELAY           = 60        # 60 s between messages
+FREE_MAX_RUNTIME         = 8 * 3600  # 8 h daily cap
+FREE_BRANDING_TAG        = "• via @Uzeron_AdsBot"
+FREE_BRANDING_LASTNAME   = FREE_BRANDING_TAG   # alias used elsewhere
 FREE_BRANDING_BIO        = "Free Automated ads • via @Uzeron_AdsBot"
 FREE_WARNINGS_BEFORE_BAN = 3
 
-# Keep this alias so rest of code that checks for tag still works
-FREE_BRANDING_LASTNAME = FREE_BRANDING_TAG
-
-# ─────────────────────────────────────────────
-# BOT API HELPERS
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
+# BOT-API HELPERS  (plain HTTP — no Telethon needed for bot msgs)
+# ═══════════════════════════════════════════════
 def _bot(method, data=None, token=None):
-    t = token or FREE_BOT_TOKEN
+    t   = token or FREE_BOT_TOKEN
     url = f"https://api.telegram.org/bot{t}/{method}"
     try:
         processed = {k: json.dumps(v) if isinstance(v, (dict, list)) else v
@@ -67,9 +76,65 @@ def edit_msg(chat_id, msg_id, text, keyboard=None):
 def kb(buttons):
     return {"inline_keyboard": buttons}
 
-# ─────────────────────────────────────────────
-# NUMPAD KEYBOARD
-# ─────────────────────────────────────────────
+# ── Check membership via Bot API ───────────────
+def check_member(user_id, chat_username):
+    """Returns True if user is a member/admin/creator of the chat."""
+    r = _bot("getChatMember", {"chat_id": f"@{chat_username}", "user_id": user_id})
+    status = r.get("result", {}).get("status", "")
+    return status in ("member", "administrator", "creator")
+
+def user_has_joined(user_id):
+    """Returns (channel_ok, community_ok)."""
+    ch  = check_member(user_id, CHANNEL_USERNAME)
+    com = check_member(user_id, COMMUNITY_USERNAME)
+    return ch, com
+
+# ═══════════════════════════════════════════════
+# KEYBOARDS
+# ═══════════════════════════════════════════════
+def force_join_keyboard():
+    return kb([
+        [{"text": "📢 Join Updates Channel", "url": CHANNEL_LINK}],
+        [{"text": "👥 Join Community",        "url": COMMUNITY_LINK}],
+        [{"text": "🔄 Try Again",             "callback_data": "check_join"}],
+    ])
+
+def welcome_keyboard():
+    return kb([
+        [{"text": "🚀 Dashboard",             "callback_data": "dashboard"}],
+        [{"text": "📢 Updates",  "url": CHANNEL_LINK},
+         {"text": "🆘 Support",  "url": SUPPORT_LINK}],
+        [{"text": "📖 How To Use", "url": HOW_TO_USE_LINK}],
+        [{"text": "💎 Go Premium", "callback_data": "upgrade"}],
+    ])
+
+def dashboard_keyboard():
+    return kb([
+        [{"text": "👤 My Account",    "callback_data": "account"},
+         {"text": "📊 Status",        "callback_data": "status"}],
+        [{"text": "💬 Set Message",   "callback_data": "setmessage"},
+         {"text": "⏱️ 60s | 10m",    "callback_data": "delay_info"}],
+        [{"text": "🚀 Start Campaign","callback_data": "startcampaign"},
+         {"text": "🛑 Stop Campaign", "callback_data": "stopcampaign"}],
+        [{"text": "🔑 Login",         "callback_data": "login"},
+         {"text": "💎 Upgrade",       "callback_data": "upgrade"}],
+        [{"text": "📢 Updates",  "url": CHANNEL_LINK},
+         {"text": "📖 How To Use","url": HOW_TO_USE_LINK}],
+        [{"text": "🚪 Logout",        "callback_data": "logout"}],
+    ])
+
+def upgrade_keyboard():
+    return kb([
+        [{"text": f"💎 Upgrade → {CONTACT_USERNAME}", "url": "https://t.me/Pandaysubscription"}],
+        [{"text": "📢 Updates",  "url": CHANNEL_LINK},
+         {"text": "🆘 Support",  "url": SUPPORT_LINK}],
+        [{"text": "🔙 Back",          "callback_data": "dashboard"}],
+    ])
+
+def back_keyboard():
+    return kb([[{"text": "🏠 Dashboard", "callback_data": "dashboard"}]])
+
+# ── Numpad for OTP / 2FA ───────────────────────
 def numpad_keyboard(prefix, entered="", hidden=False):
     display = ("•" * len(entered)) if hidden else (entered or "—")
     rows = [
@@ -83,48 +148,51 @@ def numpad_keyboard(prefix, entered="", hidden=False):
         [{"text":"7","callback_data":f"{prefix}_7"},
          {"text":"8","callback_data":f"{prefix}_8"},
          {"text":"9","callback_data":f"{prefix}_9"}],
-        [{"text":"⌫ Del","callback_data":f"{prefix}_del"},
-         {"text":"0",    "callback_data":f"{prefix}_0"},
-         {"text":"✅ Submit","callback_data":f"{prefix}_submit"}],
+        [{"text":"⌫ Del",     "callback_data":f"{prefix}_del"},
+         {"text":"0",         "callback_data":f"{prefix}_0"},
+         {"text":"✅ Submit", "callback_data":f"{prefix}_submit"}],
     ]
     if hidden:
         rows.append([{"text":"👁 Show / Hide","callback_data":f"{prefix}_toggle"}])
     rows.append([{"text":"❌ Cancel Login","callback_data":"cancel_login"}])
     return kb(rows)
 
-# ─────────────────────────────────────────────
-# KEYBOARDS
-# ─────────────────────────────────────────────
-def dashboard_keyboard():
-    return kb([
-        [{"text":"👤 My Account","callback_data":"account"},
-         {"text":"📊 Status","callback_data":"status"}],
-        [{"text":"💬 Set Message","callback_data":"setmessage"},
-         {"text":"⏱️ 60s | 10m","callback_data":"delay_info"}],
-        [{"text":"🚀 Start Campaign","callback_data":"startcampaign"},
-         {"text":"🛑 Stop Campaign","callback_data":"stopcampaign"}],
-        [{"text":"🔑 Login","callback_data":"login"},
-         {"text":"💎 Upgrade","callback_data":"upgrade"}],
-        [{"text":"🚪 Logout","callback_data":"logout"}]
-    ])
+# ═══════════════════════════════════════════════
+# MESSAGE TEXTS
+# ═══════════════════════════════════════════════
+def force_join_text():
+    return (
+        "👋 <b>Welcome to Uzeron AdsBot — Free Plan!</b>\n\n"
+        "To unlock the bot, please join our official\n"
+        "channel and community first.\n\n"
+        "<i>Tip: After joining both, tap <b>Try Again</b> to continue.</i>\n\n"
+        "Your <b>free automation journey</b> starts here 🚀"
+    )
 
-def upgrade_keyboard():
-    return kb([
-        [{"text":f"💎 Upgrade → {CONTACT_USERNAME}","url":"https://t.me/Pandaysubscription"}],
-        [{"text":"📢 Support","url":SUPPORT_LINK}],
-        [{"text":"🔙 Back","callback_data":"dashboard"}]
-    ])
+def welcome_text():
+    return (
+        "⚡ <b>Welcome to Uzeron AdsBot</b>\n"
+        "<i>The Future of Telegram Automation</i>\n\n"
+        "╔══════════════════════╗\n"
+        "║  📢 100 Groups Max\n"
+        "║  ⏱️ 60s Message Delay\n"
+        "║  🔄 10min Cycle Delay\n"
+        "║  ⏳ 8 Hours Daily Runtime\n"
+        "║  🏷️ Account Branding Required\n"
+        "╚══════════════════════╝\n\n"
+        "💎 <b>Upgrade to Premium for:</b>\n"
+        "• Unlimited groups &amp; runtime\n"
+        "• Custom delays\n"
+        "• No branding\n"
+        "• Message rotation &amp; auto schedule\n\n"
+        f"👥 Community: {COMMUNITY_LINK}\n"
+        f"🆘 Support: {SUPPORT_LINK}"
+    )
 
-def back_keyboard():
-    return kb([[{"text":"🏠 Dashboard","callback_data":"dashboard"}]])
-
-# ─────────────────────────────────────────────
-# TEXTS
-# ─────────────────────────────────────────────
 def dashboard_text(user, runtime):
     phone   = user[1] if user and user[1] else "Not connected"
-    msg_st  = "✅ Set"  if user and user[5] else "❌ Not set"
-    camp_st = "🟢 Live" if user and user[6] else "🔴 Stopped"
+    msg_st  = "✅ Set"   if user and user[5] else "❌ Not set"
+    camp_st = "🟢 Live"  if user and user[6] else "🔴 Stopped"
     hu = runtime / 3600
     hl = max(0, 8 - hu)
     return (
@@ -137,7 +205,7 @@ def dashboard_text(user, runtime):
         f"🕐 <b>Time Left:</b> {hl:.1f}h\n"
         f"📡 <b>Campaign:</b> {camp_st}\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "⚠️ <i>Free plan: 100 groups, 8hr/day</i>"
+        "⚠️ <i>Free plan: 100 groups, 8hr/day limit</i>"
     )
 
 def upgrade_text():
@@ -149,15 +217,15 @@ def upgrade_text():
         "║  🔀 Message Rotation\n"
         "║  ⏰ Auto Schedule\n"
         "║  🏷️ No Branding\n"
-        "║  24/7 Support\n"
+        "║  24/7 Priority Support\n"
         "╚══════════════════════╝\n\n"
         f"👤 Contact: <b>{CONTACT_USERNAME}</b>\n"
         f"🤖 Premium Bot: <b>{PREMIUM_BOT}</b>"
     )
 
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 # DATABASE
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 class Database:
     def get_conn(self):
         return psycopg2.connect(DATABASE_URL, sslmode='require')
@@ -182,6 +250,10 @@ class Database:
         )''')
         conn.commit(); conn.close()
 
+    # col order: 0=user_id 1=phone 2=api_id 3=api_hash 4=session_string
+    #            5=promo_message 6=is_active 7=runtime_today 8=last_reset
+    #            9=warning_count 10=is_banned 11=branding_set
+
     def get_user(self, user_id):
         conn = self.get_conn(); c = conn.cursor()
         c.execute('''SELECT user_id,phone,api_id,api_hash,session_string,
@@ -192,7 +264,7 @@ class Database:
 
     def register_user(self, user_id, username):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('SELECT user_id FROM free_users WHERE user_id=%s',(user_id,))
+        c.execute('SELECT user_id FROM free_users WHERE user_id=%s', (user_id,))
         if not c.fetchone():
             c.execute('INSERT INTO free_users(user_id,username,created_at) VALUES(%s,%s,%s)',
                       (user_id, username, datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
@@ -201,7 +273,7 @@ class Database:
 
     def is_banned(self, user_id):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('SELECT is_banned FROM free_users WHERE user_id=%s',(user_id,))
+        c.execute('SELECT is_banned FROM free_users WHERE user_id=%s', (user_id,))
         r = c.fetchone(); conn.close()
         return r and r[0] == 1
 
@@ -213,17 +285,17 @@ class Database:
 
     def set_promo_message(self, user_id, msg):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('UPDATE free_users SET promo_message=%s WHERE user_id=%s',(msg,user_id))
+        c.execute('UPDATE free_users SET promo_message=%s WHERE user_id=%s', (msg, user_id))
         conn.commit(); conn.close()
 
     def set_campaign_status(self, user_id, status):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('UPDATE free_users SET is_active=%s WHERE user_id=%s',(status,user_id))
+        c.execute('UPDATE free_users SET is_active=%s WHERE user_id=%s', (status, user_id))
         conn.commit(); conn.close()
 
     def get_runtime_today(self, user_id):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('SELECT runtime_today,last_reset FROM free_users WHERE user_id=%s',(user_id,))
+        c.execute('SELECT runtime_today,last_reset FROM free_users WHERE user_id=%s', (user_id,))
         r = c.fetchone(); conn.close()
         if not r: return 0
         runtime, last_reset = r
@@ -234,38 +306,39 @@ class Database:
 
     def _reset_runtime(self, user_id, today):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('UPDATE free_users SET runtime_today=0,last_reset=%s WHERE user_id=%s',(today,user_id))
+        c.execute('UPDATE free_users SET runtime_today=0,last_reset=%s WHERE user_id=%s', (today, user_id))
         conn.commit(); conn.close()
 
     def add_runtime(self, user_id, seconds):
         conn = self.get_conn(); c = conn.cursor()
         today = datetime.now(IST).strftime('%Y-%m-%d')
         c.execute('UPDATE free_users SET runtime_today=COALESCE(runtime_today,0)+%s,last_reset=%s WHERE user_id=%s',
-                  (seconds,today,user_id))
+                  (seconds, today, user_id))
         conn.commit(); conn.close()
 
     def set_branding(self, user_id, status):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('UPDATE free_users SET branding_set=%s WHERE user_id=%s',(status,user_id))
+        c.execute('UPDATE free_users SET branding_set=%s WHERE user_id=%s', (status, user_id))
         conn.commit(); conn.close()
 
     def add_warning(self, user_id):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('UPDATE free_users SET warning_count=COALESCE(warning_count,0)+1 WHERE user_id=%s',(user_id,))
-        c.execute('SELECT warning_count FROM free_users WHERE user_id=%s',(user_id,))
+        c.execute('UPDATE free_users SET warning_count=COALESCE(warning_count,0)+1 WHERE user_id=%s', (user_id,))
+        c.execute('SELECT warning_count FROM free_users WHERE user_id=%s', (user_id,))
         count = c.fetchone()[0]
         if count >= FREE_WARNINGS_BEFORE_BAN:
-            c.execute('UPDATE free_users SET is_banned=1 WHERE user_id=%s',(user_id,))
+            c.execute('UPDATE free_users SET is_banned=1 WHERE user_id=%s', (user_id,))
         conn.commit(); conn.close(); return count
 
     def ban_user(self, user_id):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('UPDATE free_users SET is_banned=1 WHERE user_id=%s',(user_id,))
+        c.execute('UPDATE free_users SET is_banned=1 WHERE user_id=%s', (user_id,))
         conn.commit(); conn.close()
 
     def logout_user(self, user_id):
         conn = self.get_conn(); c = conn.cursor()
-        c.execute('UPDATE free_users SET phone=NULL,api_id=NULL,api_hash=NULL,session_string=NULL,is_active=0,branding_set=0 WHERE user_id=%s',(user_id,))
+        c.execute('''UPDATE free_users SET phone=NULL,api_id=NULL,api_hash=NULL,
+                     session_string=NULL,is_active=0,branding_set=0 WHERE user_id=%s''', (user_id,))
         conn.commit(); conn.close()
 
     def get_all_active_with_branding(self):
@@ -278,29 +351,33 @@ class Database:
         c.execute('SELECT user_id,username FROM free_users WHERE is_banned=0')
         r = c.fetchall(); conn.close(); return r
 
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 # LOGGER
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 class Logger:
     def __init__(self, token): self.token = token
     def log(self, chat_id, text):
-        try: _bot("sendMessage",{"chat_id":chat_id,"text":text,"parse_mode":"HTML"},token=self.token)
+        try:
+            _bot("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
+                 token=self.token)
         except: pass
 
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 # MAIN BOT CLASS
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 class UzeronFreeBot:
     def __init__(self):
-        bot_session  = os.getenv('BOT_SESSION_STRING', '')
-        self.bot     = TelegramClient(StringSession(bot_session), BOT_API_ID, BOT_API_HASH)
-        self.db      = Database()
+        bot_session       = os.getenv('BOT_SESSION_STRING', '')
+        self.bot          = TelegramClient(StringSession(bot_session), BOT_API_ID, BOT_API_HASH)
+        self.db           = Database()
         self.db.init_db()
-        self.logger  = Logger(LOGGER_BOT_TOKEN)
-        self.tasks   = {}
+        self.logger       = Logger(LOGGER_BOT_TOKEN)
+        self.tasks        = {}
         self.campaign_start_times = {}
         self.pending_message      = {}
-        self.login_states = {}
+        self.login_states         = {}
+        # broadcast state: {uid: {'step': 'waiting_msg'}}
+        self.broadcast_state      = {}
 
     async def start(self):
         await self.bot.start(bot_token=FREE_BOT_TOKEN)
@@ -315,64 +392,63 @@ class UzeronFreeBot:
         print("✓ Uzeron Free Bot live!")
         await self.bot.run_until_disconnected()
 
-    # ─── BRANDING ────────────────────────────
+    # ─── FORCE-JOIN CHECK ─────────────────────
+    def _force_join_check(self, uid):
+        """Returns True if user has joined both required chats."""
+        try:
+            ch, com = user_has_joined(uid)
+            return ch and com
+        except Exception as e:
+            print(f"force_join_check {uid}: {e}")
+            return True   # fail-open so bot doesn't break if API glitch
 
+    # ─── BRANDING ─────────────────────────────
     async def apply_branding_on_live_client(self, uid, live_client):
         """
         Apply branding on an ALREADY CONNECTED & AUTHORIZED client.
-        - Last name: appends tag to whatever name user already has
-          e.g. "Rahul Kumar" -> "Rahul Kumar • via @Uzeron_AdsBot"
-          e.g. "Rahul"       -> "Rahul • via @Uzeron_AdsBot"
-          e.g. (empty)       -> "• via @Uzeron_AdsBot"
-        - Bio: always replaced with FREE_BRANDING_BIO
+        • Last name: appends tag to existing name
+            "Rahul Kumar" → "Rahul Kumar • via @Uzeron_AdsBot"
+            "Rahul"       → "Rahul • via @Uzeron_AdsBot"
+            (empty)       → "• via @Uzeron_AdsBot"
+        • Bio: always replaced with FREE_BRANDING_BIO
         Never disconnects the client — caller is responsible.
         """
         try:
-            me = await live_client.get_me()
+            me       = await live_client.get_me()
             cur_last = (me.last_name or "").strip()
 
-            # Remove old tag first to avoid duplicates on re-login
+            # strip old tag to avoid duplicates
             if FREE_BRANDING_TAG in cur_last:
                 cur_last = cur_last.replace(FREE_BRANDING_TAG, "").strip()
 
-            # Append tag
             new_last = f"{cur_last} {FREE_BRANDING_TAG}".strip() if cur_last else FREE_BRANDING_TAG
 
-            print(f"Branding uid={uid}: last='{me.last_name}' -> '{new_last}' | bio -> '{FREE_BRANDING_BIO}'")
-
-            await live_client(UpdateProfileRequest(
-                last_name=new_last,
-                about=FREE_BRANDING_BIO
-            ))
+            print(f"Branding uid={uid}: '{me.last_name}' → '{new_last}'")
+            await live_client(UpdateProfileRequest(last_name=new_last, about=FREE_BRANDING_BIO))
             self.db.set_branding(uid, 1)
-            print(f"OK Branding applied for uid={uid}")
+            print(f"✅ Branding OK uid={uid}")
             return True
 
         except Exception as e:
-            err_msg = f"apply_branding uid={uid} ERROR: {type(e).__name__}: {e}"
-            print(err_msg)
+            err = f"{type(e).__name__}: {e}"
+            print(f"apply_branding uid={uid} ERROR: {err}")
             try:
                 if ADMINS:
-                    self.logger.log(ADMINS[0], f"Branding failed uid={uid}\n<code>{type(e).__name__}: {e}</code>")
+                    self.logger.log(ADMINS[0],
+                        f"⚠️ Branding failed uid={uid}\n<code>{err}</code>")
             except: pass
             return False
 
     async def set_branding(self, uid, session_str, api_id, api_hash):
-        """
-        Apply branding by re-opening a session from string.
-        Used ONLY by branding_checker (periodic re-verification).
-        NOT used on login path.
-        """
+        """Re-open session and apply branding — used by branding_checker only."""
         c = None
         try:
             c = TelegramClient(StringSession(session_str), api_id, api_hash)
             await c.connect()
             if not await c.is_user_authorized():
-                print(f"set_branding uid={uid}: not authorized")
                 await c.disconnect(); return False
             ok = await self.apply_branding_on_live_client(uid, c)
-            await c.disconnect()
-            return ok
+            await c.disconnect(); return ok
         except Exception as e:
             print(f"set_branding uid={uid}: {e}")
             try:
@@ -396,29 +472,53 @@ class UzeronFreeBot:
                 await c.disconnect(); return
             me = await c.get_me()
             await c.disconnect()
-            if FREE_BRANDING_LASTNAME not in (me.last_name or ""):
+            if FREE_BRANDING_TAG not in (me.last_name or ""):
                 count = self.db.add_warning(uid)
                 left  = FREE_WARNINGS_BEFORE_BAN - count
                 if count >= FREE_WARNINGS_BEFORE_BAN:
-                    if uid in self.tasks: self.tasks[uid].cancel(); del self.tasks[uid]
+                    if uid in self.tasks:
+                        self.tasks[uid].cancel(); del self.tasks[uid]
                     self.db.set_campaign_status(uid, 0)
-                    send_msg(uid, "🚫 <b>Banned!</b> Branding removed 3 times.\n\nUpgrade to continue.", upgrade_keyboard())
+                    send_msg(uid, "🚫 <b>Banned!</b> Branding removed 3× — upgrade to continue.",
+                             upgrade_keyboard())
                 else:
                     u = self.db.get_user(uid)
                     await self.set_branding(uid, u[4], u[2], u[3])
-                    send_msg(uid, f"⚠️ <b>Warning {count}/3</b> — Branding removed & re-applied.\n{left} warning(s) left.", upgrade_keyboard())
+                    send_msg(uid,
+                        f"⚠️ <b>Warning {count}/3</b> — branding removed &amp; re-applied.\n"
+                        f"{left} warning(s) left before ban.", upgrade_keyboard())
         except Exception as e:
             print(f"verify_branding uid={uid}: {e}")
 
-    # ─── HANDLERS ────────────────────────────
+    # ─── BROADCAST ────────────────────────────
+    async def do_broadcast(self, admin_uid, message_text):
+        """Send a message to all non-banned users."""
+        users   = self.db.get_all_users()
+        total   = len(users)
+        success = 0
+        failed  = 0
+        send_msg(admin_uid, f"📣 Broadcasting to <b>{total}</b> users…")
+        for uid, _ in users:
+            try:
+                send_msg(uid, message_text)
+                success += 1
+                await asyncio.sleep(0.05)   # ~20 msg/s — stay under Telegram limits
+            except:
+                failed += 1
+        send_msg(admin_uid,
+            f"✅ <b>Broadcast complete!</b>\n\n"
+            f"👥 Total: {total}\n✅ Sent: {success}\n❌ Failed: {failed}")
+
+    # ─── REGISTER HANDLERS ────────────────────
     def register_handlers(self):
 
+        # ── Admin commands ──────────────────────
         @self.bot.on(events.NewMessage(pattern='/users'))
         async def h_users(event):
             if event.sender_id not in ADMINS: return
-            ul = self.db.get_all_users()
+            ul  = self.db.get_all_users()
             msg = f"👥 <b>Free Users ({len(ul)}):</b>\n\n" + \
-                  "".join(f"• {'@'+u if u else str(i)}\n" for i,u in ul)
+                  "".join(f"• {'@'+u if u else str(i)}\n" for i, u in ul)
             await event.reply(msg or "No users.", parse_mode='html')
 
         @self.bot.on(events.NewMessage(pattern='/ban'))
@@ -430,22 +530,45 @@ class UzeronFreeBot:
                 if uid in self.tasks: self.tasks[uid].cancel(); del self.tasks[uid]
                 await event.reply(f"✅ Banned {uid}")
                 send_msg(uid, f"🚫 Banned. Contact {CONTACT_USERNAME}", upgrade_keyboard())
-            except: await event.reply("❌ /ban USER_ID")
+            except: await event.reply("❌ Usage: /ban USER_ID")
 
         @self.bot.on(events.NewMessage(pattern='/stats'))
         async def h_stats(event):
             if event.sender_id not in ADMINS: return
-            await event.reply(f"📊 Users: {len(self.db.get_all_users())} | Running: {len(self.tasks)}", parse_mode='html')
+            await event.reply(
+                f"📊 <b>Stats</b>\n\n"
+                f"👥 Users: {len(self.db.get_all_users())}\n"
+                f"🚀 Running: {len(self.tasks)}",
+                parse_mode='html')
 
+        @self.bot.on(events.NewMessage(pattern='/broadcast'))
+        async def h_broadcast(event):
+            if event.sender_id not in ADMINS: return
+            uid = event.sender_id
+            self.broadcast_state[uid] = {'step': 'waiting_msg'}
+            await event.reply(
+                "📣 <b>Broadcast</b>\n\n"
+                "Send the message you want to broadcast to all users.\n"
+                "<i>/cancel to abort</i>",
+                parse_mode='html')
+
+        # ── /start ──────────────────────────────
         @self.bot.on(events.NewMessage(pattern='/start'))
         async def h_start(event):
             uid = event.sender_id
             if self.db.is_banned(uid):
-                send_msg(uid, "🚫 Banned.", upgrade_keyboard()); return
-            self.db.register_user(uid, event.sender.username)
-            user = self.db.get_user(uid)
-            send_msg(uid, dashboard_text(user, self.db.get_runtime_today(uid)), dashboard_keyboard())
+                send_msg(uid, "🚫 You are banned.", upgrade_keyboard()); return
 
+            self.db.register_user(uid, event.sender.username)
+
+            # Force-join gate
+            if not self._force_join_check(uid):
+                send_msg(uid, force_join_text(), force_join_keyboard()); return
+
+            # Passed — show welcome
+            send_msg(uid, welcome_text(), welcome_keyboard())
+
+        # ── Callback queries ────────────────────
         @self.bot.on(events.CallbackQuery())
         async def h_cb(event):
             uid  = event.sender_id
@@ -458,6 +581,27 @@ class UzeronFreeBot:
             user    = self.db.get_user(uid)
             runtime = self.db.get_runtime_today(uid) if user else 0
 
+            # ── Force-join "Try Again" ──────────
+            if data == 'check_join':
+                await event.answer()
+                if self._force_join_check(uid):
+                    edit_msg(uid, mid, welcome_text(), welcome_keyboard())
+                else:
+                    ch, com = user_has_joined(uid)
+                    missing = []
+                    if not ch:  missing.append("📢 Updates Channel")
+                    if not com: missing.append("👥 Community")
+                    await event.answer(
+                        "❌ Still not joined:\n" + "\n".join(missing),
+                        alert=True)
+                return
+
+            # ── All other callbacks require join ─
+            if not self._force_join_check(uid):
+                await event.answer("❌ Join channel & community first!", alert=True)
+                edit_msg(uid, mid, force_join_text(), force_join_keyboard()); return
+
+            # ── Nav ─────────────────────────────
             if data == 'dashboard':
                 await event.answer()
                 edit_msg(uid, mid, dashboard_text(user, runtime), dashboard_keyboard()); return
@@ -467,7 +611,7 @@ class UzeronFreeBot:
                 edit_msg(uid, mid, upgrade_text(), upgrade_keyboard()); return
 
             if data == 'delay_info':
-                await event.answer("60s delay | 10min cycle. Upgrade for custom!", alert=True); return
+                await event.answer("60s message delay | 10min cycle.\nUpgrade for custom!", alert=True); return
 
             if data == 'account':
                 await event.answer()
@@ -475,16 +619,22 @@ class UzeronFreeBot:
                 con = "✅ Connected" if user and user[4] else "❌ Not connected"
                 brd = "✅ Set" if user and user[11] else "⏳ Pending"
                 edit_msg(uid, mid,
-                    f"👤 <b>My Account</b>\n\n📱 Phone: <code>{ph}</code>\n🔗 Status: {con}\n🏷️ Branding: {brd}",
-                    kb([[{"text":"🔑 Login","callback_data":"login"},{"text":"🚪 Logout","callback_data":"logout"}],
+                    f"👤 <b>My Account</b>\n\n"
+                    f"📱 Phone: <code>{ph}</code>\n"
+                    f"🔗 Status: {con}\n"
+                    f"🏷️ Branding: {brd}",
+                    kb([[{"text":"🔑 Login","callback_data":"login"},
+                         {"text":"🚪 Logout","callback_data":"logout"}],
                         [{"text":"🏠 Dashboard","callback_data":"dashboard"}]])); return
 
             if data == 'status':
                 await event.answer()
                 s  = "🟢 Live" if user and user[6] else "🔴 Stopped"
-                mp = (user[5][:60]+'...') if user and user[5] and len(user[5])>60 else (user[5] if user else "Not set") or "Not set"
+                mp = ((user[5][:60]+'…') if user and user[5] and len(user[5])>60
+                      else (user[5] if user else "Not set") or "Not set")
                 edit_msg(uid, mid,
-                    f"📊 <b>Status</b>\n\n📱 <code>{user[1] if user and user[1] else 'Not set'}</code>\n"
+                    f"📊 <b>Status</b>\n\n"
+                    f"📱 <code>{user[1] if user and user[1] else 'Not set'}</code>\n"
                     f"💬 {mp}\n📡 {s}\n⏳ {runtime/3600:.1f}h / 8h",
                     back_keyboard()); return
 
@@ -492,7 +642,9 @@ class UzeronFreeBot:
                 await event.answer()
                 self.pending_message[uid] = True
                 edit_msg(uid, mid,
-                    "💬 <b>Set Your Ad Message</b>\n\n✍️ Send your message now:\n<i>/cancel to go back</i>",
+                    "💬 <b>Set Your Ad Message</b>\n\n"
+                    "✍️ Send your promotional message now:\n"
+                    "<i>/cancel to go back</i>",
                     kb([[{"text":"❌ Cancel","callback_data":"dashboard"}]])); return
 
             if data == 'logout':
@@ -500,23 +652,28 @@ class UzeronFreeBot:
                 if uid in self.tasks: self.tasks[uid].cancel(); del self.tasks[uid]
                 self.db.logout_user(uid)
                 edit_msg(uid, mid, dashboard_text(self.db.get_user(uid), 0), dashboard_keyboard())
-                send_msg(uid, "✅ Logged out!"); return
+                send_msg(uid, "✅ Logged out successfully!"); return
 
             if data == 'startcampaign':
                 await event.answer()
                 if not user or not user[4]:
-                    send_msg(uid, "❌ Login first!"); return
+                    send_msg(uid, "❌ Please login first!"); return
                 if not user[5]:
                     send_msg(uid, "❌ Set your ad message first!"); return
                 if uid in self.tasks:
-                    send_msg(uid, "⚠️ Already running!"); return
+                    send_msg(uid, "⚠️ Campaign already running!"); return
                 if runtime >= FREE_MAX_RUNTIME:
-                    edit_msg(uid, mid, "⏰ <b>Daily Limit Reached!</b>\n\nCome back tomorrow or upgrade.", upgrade_keyboard()); return
+                    edit_msg(uid, mid,
+                        "⏰ <b>Daily Limit Reached!</b>\n\nCome back tomorrow or upgrade.",
+                        upgrade_keyboard()); return
                 self.db.set_campaign_status(uid, 1)
                 self.campaign_start_times[uid] = datetime.now()
                 self.tasks[uid] = asyncio.create_task(self.run_campaign(uid))
                 edit_msg(uid, mid, dashboard_text(self.db.get_user(uid), runtime), dashboard_keyboard())
-                send_msg(uid, f"🚀 <b>Campaign Started!</b>\n\n{FREE_MAX_GROUPS} groups | {FREE_MSG_DELAY}s delay | {FREE_CYCLE_DELAY//60}m cycle | 8h daily limit"); return
+                send_msg(uid,
+                    f"🚀 <b>Campaign Started!</b>\n\n"
+                    f"📊 {FREE_MAX_GROUPS} groups  |  ⏱️ {FREE_MSG_DELAY}s delay  |  "
+                    f"🔄 {FREE_CYCLE_DELAY//60}m cycle  |  ⏳ 8h daily limit"); return
 
             if data == 'stopcampaign':
                 await event.answer()
@@ -526,9 +683,12 @@ class UzeronFreeBot:
                 self.tasks[uid].cancel(); del self.tasks[uid]
                 if uid in self.campaign_start_times:
                     elapsed = (datetime.now()-self.campaign_start_times[uid]).total_seconds()
-                    self.db.add_runtime(uid, int(elapsed)); del self.campaign_start_times[uid]
-                edit_msg(uid, mid, dashboard_text(self.db.get_user(uid), self.db.get_runtime_today(uid)), dashboard_keyboard())
-                send_msg(uid, "🛑 Campaign stopped!"); return
+                    self.db.add_runtime(uid, int(elapsed))
+                    del self.campaign_start_times[uid]
+                edit_msg(uid, mid,
+                    dashboard_text(self.db.get_user(uid), self.db.get_runtime_today(uid)),
+                    dashboard_keyboard())
+                send_msg(uid, "🛑 <b>Campaign Stopped!</b>"); return
 
             if data == 'login':
                 await event.answer()
@@ -537,7 +697,7 @@ class UzeronFreeBot:
                 self.login_states[uid] = {'step': 'api'}
                 edit_msg(uid, mid,
                     "🔑 <b>Login — Step 1/3: API Credentials</b>\n\n"
-                    "Send your API credentials in one message:\n"
+                    "Send your credentials in one message:\n"
                     "<code>API_ID API_HASH</code>\n\n"
                     "📌 Get from: <a href='https://my.telegram.org/apps'>my.telegram.org/apps</a>\n"
                     "Example: <code>12345678 abc123def456</code>\n\n"
@@ -552,27 +712,40 @@ class UzeronFreeBot:
             if data.startswith('otp_'):
                 await self._handle_numpad(event, uid, mid, data, 'otp'); return
 
+        # ── Text messages ───────────────────────
         @self.bot.on(events.NewMessage())
         async def h_text(event):
             uid  = event.sender_id
             text = (event.message.text or '').strip()
             if not text or self.db.is_banned(uid): return
 
+            # /cancel
             if text == '/cancel':
                 await self._cleanup_login(uid)
-                if uid in self.pending_message: del self.pending_message[uid]
+                if uid in self.pending_message:  del self.pending_message[uid]
+                if uid in self.broadcast_state:  del self.broadcast_state[uid]
                 user    = self.db.get_user(uid)
                 runtime = self.db.get_runtime_today(uid) if user else 0
                 send_msg(uid, dashboard_text(user, runtime), dashboard_keyboard()); return
 
+            # ── Broadcast message capture (admin) ──
+            if uid in self.broadcast_state and uid in ADMINS:
+                if not text.startswith('/'):
+                    del self.broadcast_state[uid]
+                    asyncio.create_task(self.do_broadcast(uid, text))
+                    return
+
+            # ── Ad message capture ──
             if uid in self.pending_message and not text.startswith('/'):
                 del self.pending_message[uid]
                 self.db.set_promo_message(uid, text)
                 send_msg(uid,
-                    f"✅ <b>Message Saved!</b>\n\n📝 <i>{text[:100]}{'...' if len(text)>100 else ''}</i>",
+                    f"✅ <b>Ad Message Saved!</b>\n\n"
+                    f"📝 <i>{text[:100]}{'…' if len(text)>100 else ''}</i>",
                     kb([[{"text":"🚀 Start Campaign","callback_data":"startcampaign"}],
                         [{"text":"🏠 Dashboard","callback_data":"dashboard"}]])); return
 
+            # ── Login text steps ──
             if uid in self.login_states:
                 state = self.login_states[uid]
                 if not text.startswith('/'):
@@ -583,8 +756,7 @@ class UzeronFreeBot:
                     elif state['step'] == '2fa':
                         await self._login_got_2fa(uid, text)
 
-    # ─── LOGIN HELPERS ────────────────────────
-
+    # ─── LOGIN HELPERS ─────────────────────────
     async def _cleanup_login(self, uid):
         if uid in self.login_states:
             try:
@@ -597,14 +769,10 @@ class UzeronFreeBot:
         parts = text.strip().split()
         if len(parts) != 2 or not parts[0].isdigit():
             send_msg(uid,
-                "❌ Wrong format.\n\nSend exactly: <code>API_ID API_HASH</code>\n"
+                "❌ Wrong format.\n\nSend: <code>API_ID API_HASH</code>\n"
                 "Example: <code>12345678 abcdef1234567890</code>",
                 kb([[{"text":"❌ Cancel","callback_data":"cancel_login"}]])); return
-        self.login_states[uid].update({
-            'api_id':   int(parts[0]),
-            'api_hash': parts[1],
-            'step':     'phone'
-        })
+        self.login_states[uid].update({'api_id': int(parts[0]), 'api_hash': parts[1], 'step': 'phone'})
         send_msg(uid,
             "✅ <b>API credentials saved!</b>\n\n"
             "🔑 <b>Login — Step 2/3: Phone Number</b>\n\n"
@@ -617,29 +785,27 @@ class UzeronFreeBot:
         if not text.startswith('+'):
             send_msg(uid, "❌ Must include country code. Example: <code>+917239879045</code>"); return
         state = self.login_states[uid]
-        send_msg(uid, "⏳ <b>Sending code...</b>")
+        send_msg(uid, "⏳ <b>Sending code…</b>")
         try:
             client = TelegramClient(StringSession(), state['api_id'], state['api_hash'])
             await client.connect()
             sent = await client.send_code_request(text.strip())
             state.update({
-                'client':          client,
-                'phone':           text.strip(),
+                'client': client, 'phone': text.strip(),
                 'phone_code_hash': sent.phone_code_hash,
-                'step':            'otp',
-                'otp_digits':      ''
+                'step': 'otp', 'otp_digits': ''
             })
             r = send_msg(uid,
                 "📨 <b>Code sent to your Telegram!</b>\n\n"
                 "🔢 <b>Login — Step 3/3: Enter OTP</b>\n\n"
-                "Use the buttons below to enter your code:",
+                "Use the buttons below:",
                 numpad_keyboard('otp', ''))
             try: state['otp_msg_id'] = r['result']['message_id']
             except: state['otp_msg_id'] = None
         except Exception as e:
             send_msg(uid,
                 f"❌ <b>Failed to send code:</b>\n<code>{e}</code>\n\n"
-                "Check your API_ID and API_HASH and try again.",
+                "Check your API_ID / API_HASH and try again.",
                 kb([[{"text":"🔑 Try Again","callback_data":"login"},
                      {"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
             await self._cleanup_login(uid)
@@ -647,64 +813,47 @@ class UzeronFreeBot:
     async def _handle_numpad(self, event, uid, mid, data, prefix):
         if uid not in self.login_states:
             await event.answer(); return
-
         state  = self.login_states[uid]
         action = data[len(prefix)+1:]
         key    = 'otp_digits' if prefix == 'otp' else 'twofa_digits'
         if key not in state: state[key] = ''
 
-        if action == 'display':
-            await event.answer(); return
-
-        if action == 'toggle':
-            state['twofa_hidden'] = not state.get('twofa_hidden', True)
-            await event.answer()
-
-        elif action == 'del':
-            state[key] = state[key][:-1]
-            await event.answer("⌫")
-
+        if   action == 'display': await event.answer(); return
+        elif action == 'toggle':  state['twofa_hidden'] = not state.get('twofa_hidden', True); await event.answer()
+        elif action == 'del':     state[key] = state[key][:-1]; await event.answer("⌫")
         elif action == 'submit':
             await event.answer()
-            if not state[key]:
-                await event.answer("❌ Nothing entered!", alert=True); return
-            if prefix == 'otp':
-                await self._submit_otp(uid, mid, state[key])
-            else:
-                await self._submit_2fa(uid, mid, state[key])
+            if not state[key]: await event.answer("❌ Nothing entered!", alert=True); return
+            if prefix == 'otp': await self._submit_otp(uid, mid, state[key])
+            else:               await self._submit_2fa(uid, mid, state[key])
             return
-
         elif action.isdigit():
-            if len(state[key]) < 10:
-                state[key] += action
+            if len(state[key]) < 10: state[key] += action
             await event.answer(state[key])
-
         else:
             await event.answer(); return
 
         digits = state[key]
         hidden = state.get('twofa_hidden', True) if prefix == 'twofa' else False
-        disp   = "•" * len(digits) if hidden else (digits or "—")
-        body   = (f"📨 <b>Enter OTP using buttons:</b>\n\nCode so far: <code>{disp}</code>"
+        disp   = "•"*len(digits) if hidden else (digits or "—")
+        body   = (f"📨 <b>Enter OTP:</b>\n\nCode so far: <code>{disp}</code>"
                   if prefix == 'otp' else
                   f"🔐 <b>Enter 2FA Password:</b>\n\nPassword: <code>{disp}</code>")
-        try:
-            edit_msg(uid, mid, body, numpad_keyboard(prefix, digits, hidden=hidden))
+        try: edit_msg(uid, mid, body, numpad_keyboard(prefix, digits, hidden=hidden))
         except: pass
 
     async def _submit_otp(self, uid, mid, code):
         state = self.login_states.get(uid)
         if not state: return
         try:
-            await state['client'].sign_in(
-                state['phone'], code,
-                phone_code_hash=state['phone_code_hash'])
+            await state['client'].sign_in(state['phone'], code,
+                                          phone_code_hash=state['phone_code_hash'])
             await self._complete_login(uid, state, mid)
         except SessionPasswordNeededError:
             state['step'] = '2fa'
             edit_msg(uid, mid,
                 "🔐 <b>2FA Enabled!</b>\n\n"
-                "✍️ <b>Type your 2FA password</b> and send it as a message.\n\n"
+                "✍️ Type your 2FA password and send it as a message.\n"
                 "<i>/cancel to go back</i>",
                 kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
         except Exception as e:
@@ -722,7 +871,7 @@ class UzeronFreeBot:
             await self._complete_login(uid, state, mid=None)
         except Exception as e:
             send_msg(uid,
-                f"❌ <b>Wrong 2FA password:</b> <code>{e}</code>\n\nType and send it again:",
+                f"❌ <b>Wrong 2FA password:</b> <code>{e}</code>\n\nType and send again:",
                 kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
 
     async def _submit_2fa(self, uid, mid, password):
@@ -733,14 +882,13 @@ class UzeronFreeBot:
             await self._complete_login(uid, state, mid)
         except Exception as e:
             send_msg(uid,
-                "❌ <b>Wrong 2FA password.</b> Try again.\n\n<i>Just type your password and send it.</i>",
+                "❌ <b>Wrong 2FA password.</b> Try again.\n<i>Just type &amp; send it.</i>",
                 kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
 
     async def _complete_login(self, uid, state, mid):
         """
-        Save session, then apply branding on the LIVE already-signed-in client.
-        Only disconnect AFTER branding is done.
-        mid=None when coming from a text message (2FA typed path).
+        Persist session → notify user → apply branding on LIVE client → disconnect.
+        mid=None when arriving from a typed text message (2FA path).
         """
         live_client = state['client']
         phone    = state['phone']
@@ -748,36 +896,29 @@ class UzeronFreeBot:
         api_hash = state['api_hash']
         session  = live_client.session.save()
 
-        # 1. Persist session
         self.db.save_session(uid, phone, api_id, api_hash, session)
         del self.login_states[uid]
         self.logger.log(uid, f"✅ Free login: {phone}")
 
-        # 2. Notify
         notify = (
             "✅ <b>Login Successful!</b>\n\n"
             f"📱 Account: <code>{phone}</code>\n\n"
-            "🏷️ Setting branding on your account..."
+            "🏷️ Setting branding on your account…"
         )
-        if mid:
-            edit_msg(uid, mid, notify)
-        else:
-            send_msg(uid, notify)
+        if mid: edit_msg(uid, mid, notify)
+        else:   send_msg(uid, notify)
 
-        # 3. Apply branding on the LIVE client — no reconnect needed
+        # Apply branding on the still-connected live client
         ok = await self.apply_branding_on_live_client(uid, live_client)
 
-        # 4. Disconnect only after branding attempt
-        try:
-            await live_client.disconnect()
+        try: await live_client.disconnect()
         except: pass
 
-        # 5. Final message
         if ok:
             send_msg(uid,
                 "✅ <b>Account Ready!</b>\n\n"
-                f"🏷️ Last name set to:\n<code>{FREE_BRANDING_LASTNAME}</code>\n\n"
-                "⚠️ Do NOT remove — 3 strikes = ban\n"
+                f"🏷️ Last name updated with branding tag.\n\n"
+                "⚠️ Do <b>NOT</b> remove it — 3 strikes = permanent ban\n"
                 "💎 Upgrade to remove branding requirement!",
                 kb([[{"text":"💬 Set Ad Message","callback_data":"setmessage"}],
                     [{"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
@@ -785,10 +926,11 @@ class UzeronFreeBot:
             send_msg(uid,
                 "✅ <b>Login Successful!</b>\n\n"
                 "⚠️ Branding could not be set automatically.\n"
-                f"Please add to your last name manually:\n<code>{FREE_BRANDING_LASTNAME}</code>",
+                f"Please add manually to your last name:\n"
+                f"<code>{FREE_BRANDING_LASTNAME}</code>",
                 kb([[{"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
 
-    # ─── CAMPAIGN ────────────────────────────
+    # ─── CAMPAIGN ─────────────────────────────
     async def run_campaign(self, uid):
         try:
             user   = self.db.get_user(uid)
@@ -807,9 +949,9 @@ class UzeronFreeBot:
                 send_msg(uid, "❌ No groups found!")
                 self.db.set_campaign_status(uid, 0); await client.disconnect(); return
 
-            send_msg(uid, f"📊 <b>Ready!</b> Found <b>{len(groups)}</b> groups — starting now...")
+            send_msg(uid, f"📊 <b>Ready!</b> Found <b>{len(groups)}</b> groups — starting now…")
 
-            round_num = 0
+            round_num      = 0
             campaign_start = datetime.now()
 
             while self.db.get_user(uid)[6]:
@@ -821,7 +963,7 @@ class UzeronFreeBot:
                     self.db.set_campaign_status(uid, 0)
                     self.db.add_runtime(uid, int(elapsed_session))
                     if uid in self.campaign_start_times: del self.campaign_start_times[uid]
-                    send_msg(uid, "⏰ <b>8h Daily Limit Reached!</b>\n\nResumes tomorrow midnight IST.", upgrade_keyboard())
+                    send_msg(uid, "⏰ <b>8h Daily Limit Reached!</b>\n\nResumes tomorrow.", upgrade_keyboard())
                     break
 
                 round_num += 1
@@ -837,15 +979,15 @@ class UzeronFreeBot:
                         sent += 1
                         await asyncio.sleep(FREE_MSG_DELAY)
                     except FloodWaitError as e:
-                        send_msg(uid, f"⚠️ FloodWait {e.seconds}s — pausing...")
+                        send_msg(uid, f"⚠️ FloodWait {e.seconds}s — pausing…")
                         await asyncio.sleep(e.seconds)
                     except Exception:
                         failed += 1; await asyncio.sleep(10)
 
                 hl = max(0, 8-(runtime+elapsed_session)/3600)
                 send_msg(uid,
-                    f"📊 <b>Round {round_num}</b> — ✅{sent}  ❌{failed}\n"
-                    f"⏳ {hl:.1f}h left | Next in {FREE_CYCLE_DELAY//60}m",
+                    f"📊 <b>Round {round_num}</b> — ✅ {sent}  ❌ {failed}\n"
+                    f"⏳ {hl:.1f}h left  |  Next in {FREE_CYCLE_DELAY//60}m",
                     kb([[{"text":"🛑 Stop","callback_data":"stopcampaign"},
                          {"text":"💎 Upgrade","callback_data":"upgrade"}]]))
                 await asyncio.sleep(FREE_CYCLE_DELAY)
@@ -855,21 +997,23 @@ class UzeronFreeBot:
         except asyncio.CancelledError:
             if uid in self.campaign_start_times:
                 elapsed = (datetime.now()-self.campaign_start_times[uid]).total_seconds()
-                self.db.add_runtime(uid, int(elapsed)); del self.campaign_start_times[uid]
+                self.db.add_runtime(uid, int(elapsed))
+                del self.campaign_start_times[uid]
         except Exception as e:
             self.db.set_campaign_status(uid, 0)
             if uid in self.tasks: del self.tasks[uid]
             send_msg(uid, f"❌ Campaign error: <code>{e}</code>")
 
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 # MAIN
-# ─────────────────────────────────────────────
+# ═══════════════════════════════════════════════
 async def main():
     print("="*50+"\n  🆓 UZERON ADSBOT — Free Tier\n"+"="*50)
-    missing = [v for v in ['API_ID','API_HASH','FREE_BOT_TOKEN','LOGGER_BOT_TOKEN','ADMIN_IDS','DATABASE_URL']
+    missing = [v for v in ['API_ID','API_HASH','FREE_BOT_TOKEN','LOGGER_BOT_TOKEN',
+                            'ADMIN_IDS','DATABASE_URL']
                if not os.getenv(v)]
     if missing:
-        print(f"❌ Missing: {', '.join(missing)}"); sys.exit(1)
+        print(f"❌ Missing env vars: {', '.join(missing)}"); sys.exit(1)
     await UzeronFreeBot().start()
 
 if __name__ == '__main__':
