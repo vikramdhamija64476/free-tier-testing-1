@@ -319,23 +319,29 @@ class UzeronFreeBot:
         await self.bot.run_until_disconnected()
 
     # ─── BRANDING ────────────────────────────
-    async def set_branding(self, uid, user):
+    async def set_branding(self, uid, session_str, api_id, api_hash):
+        """Set last name + bio branding on the user's account.
+        Accepts credentials directly — never re-fetches from DB to avoid race conditions.
+        """
+        c = None
         try:
-            c = TelegramClient(StringSession(user[4]), user[2], user[3])
+            c = TelegramClient(StringSession(session_str), api_id, api_hash)
             await c.connect()
             if not await c.is_user_authorized():
+                print(f"set_branding {uid}: not authorized")
                 await c.disconnect(); return False
             me       = await c.get_me()
             cur_last = me.last_name or ""
-            new_last = cur_last if FREE_BRANDING_LASTNAME in cur_last \
-                       else f"{cur_last} {FREE_BRANDING_LASTNAME}".strip()
+            # Set last name to ONLY the branding tag (clean, like competitor)
+            new_last = FREE_BRANDING_LASTNAME
             await c(UpdateProfileRequest(last_name=new_last, about=FREE_BRANDING_BIO))
             await c.disconnect()
             self.db.set_branding(uid, 1)
             return True
         except Exception as e:
             print(f"set_branding {uid}: {e}")
-            try: await c.disconnect()
+            try:
+                if c: await c.disconnect()
             except: pass
             return False
 
@@ -363,7 +369,8 @@ class UzeronFreeBot:
                     self.db.set_campaign_status(uid, 0)
                     send_msg(uid, "🚫 <b>Banned!</b> Branding removed 3 times.\n\nUpgrade to continue.", upgrade_keyboard())
                 else:
-                    await self.set_branding(uid, self.db.get_user(uid))
+                    u = self.db.get_user(uid)
+                    await self.set_branding(uid, u[4], u[2], u[3])
                     send_msg(uid, f"⚠️ <b>Warning {count}/3</b> — Branding removed & re-applied.\n{left} warning(s) left.", upgrade_keyboard())
         except Exception as e:
             print(f"verify_branding {uid}: {e}")
@@ -706,10 +713,12 @@ class UzeronFreeBot:
                 kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
 
     async def _complete_login_text(self, uid, state):
-        """Complete login when triggered from a text message (no mid to edit)"""
-        session = state['client'].session.save()
-        phone   = state['phone']
-        self.db.save_session(uid, phone, state['api_id'], state['api_hash'], session)
+        """Complete login when triggered from a text message (2FA path — no mid to edit)"""
+        session  = state['client'].session.save()
+        phone    = state['phone']
+        api_id   = state['api_id']
+        api_hash = state['api_hash']
+        self.db.save_session(uid, phone, api_id, api_hash, session)
         await state['client'].disconnect()
         del self.login_states[uid]
         self.logger.log(uid, f"✅ Free login: {phone}")
@@ -719,23 +728,9 @@ class UzeronFreeBot:
             f"📱 Account: <code>{phone}</code>\n\n"
             "🏷️ Setting branding on your account...")
 
-        user = self.db.get_user(uid)
-        ok   = await self.set_branding(uid, user)
-
-        if ok:
-            send_msg(uid,
-                "✅ <b>Account Ready!</b>\n\n"
-                f"🏷️ Branding added to last name:\n<code>{FREE_BRANDING_LASTNAME}</code>\n\n"
-                "⚠️ Do NOT remove — 3 strikes = ban\n"
-                "💎 Upgrade to remove branding requirement!",
-                kb([[{"text":"💬 Set Ad Message","callback_data":"setmessage"}],
-                    [{"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
-        else:
-            send_msg(uid,
-                "✅ <b>Login Successful!</b>\n\n"
-                "⚠️ Could not auto-set branding.\n"
-                f"Add manually to your last name:\n<code>{FREE_BRANDING_LASTNAME}</code>",
-                kb([[{"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
+        # Pass credentials directly — avoids DB race condition
+        ok = await self.set_branding(uid, session, api_id, api_hash)
+        await self._send_branding_result(uid, ok)
 
     async def _submit_2fa(self, uid, mid, password):
         state = self.login_states.get(uid)
@@ -750,9 +745,11 @@ class UzeronFreeBot:
                 kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
 
     async def _complete_login(self, uid, state, mid):
-        session = state['client'].session.save()
-        phone   = state['phone']
-        self.db.save_session(uid, phone, state['api_id'], state['api_hash'], session)
+        session  = state['client'].session.save()
+        phone    = state['phone']
+        api_id   = state['api_id']
+        api_hash = state['api_hash']
+        self.db.save_session(uid, phone, api_id, api_hash, session)
         await state['client'].disconnect()
         del self.login_states[uid]
         self.logger.log(uid, f"✅ Free login: {phone}")
@@ -762,13 +759,16 @@ class UzeronFreeBot:
             f"📱 Account: <code>{phone}</code>\n\n"
             "🏷️ Setting branding on your account...")
 
-        user = self.db.get_user(uid)
-        ok   = await self.set_branding(uid, user)
+        # Pass credentials directly from state — avoids DB race condition
+        ok = await self.set_branding(uid, session, api_id, api_hash)
+        await self._send_branding_result(uid, ok)
 
+    async def _send_branding_result(self, uid, ok):
+        """Send the post-login message depending on whether branding succeeded."""
         if ok:
             send_msg(uid,
                 "✅ <b>Account Ready!</b>\n\n"
-                f"🏷️ Branding added to last name:\n<code>{FREE_BRANDING_LASTNAME}</code>\n\n"
+                f"🏷️ Last name set to:\n<code>{FREE_BRANDING_LASTNAME}</code>\n\n"
                 "⚠️ Do NOT remove — 3 strikes = ban\n"
                 "💎 Upgrade to remove branding requirement!",
                 kb([[{"text":"💬 Set Ad Message","callback_data":"setmessage"}],
@@ -776,9 +776,9 @@ class UzeronFreeBot:
         else:
             send_msg(uid,
                 "✅ <b>Login Successful!</b>\n\n"
-                "⚠️ Could not auto-set branding.\n"
-                f"Add manually to your last name:\n<code>{FREE_BRANDING_LASTNAME}</code>",
-                back_keyboard())
+                "⚠️ Branding could not be set automatically.\n"
+                f"Please add to your last name manually:\n<code>{FREE_BRANDING_LASTNAME}</code>",
+                kb([[{"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
 
     # ─── CAMPAIGN ────────────────────────────
     async def run_campaign(self, uid):
