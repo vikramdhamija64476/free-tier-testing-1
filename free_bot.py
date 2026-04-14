@@ -179,10 +179,6 @@ class Database:
         )''')
         conn.commit(); conn.close()
 
-    # col order: 0=user_id 1=phone 2=api_id 3=api_hash 4=session_string
-    #            5=promo_message 6=is_active 7=runtime_today 8=last_reset
-    #            9=warning_count 10=is_banned 11=branding_set
-
     def get_user(self, user_id):
         conn = self.get_conn(); c = conn.cursor()
         c.execute('''SELECT user_id,phone,api_id,api_hash,session_string,
@@ -301,8 +297,6 @@ class UzeronFreeBot:
         self.tasks   = {}
         self.campaign_start_times = {}
         self.pending_message      = {}
-        # login_states[uid] = {step, api_id, api_hash, phone, phone_code_hash,
-        #                       client, otp_digits, twofa_digits, twofa_hidden}
         self.login_states = {}
 
     async def start(self):
@@ -319,27 +313,43 @@ class UzeronFreeBot:
         await self.bot.run_until_disconnected()
 
     # ─── BRANDING ────────────────────────────
+
+    async def apply_branding_on_live_client(self, uid, live_client):
+        """
+        Apply last name + bio on an ALREADY CONNECTED & AUTHORIZED client.
+        Called right after sign_in() so the connection is guaranteed live.
+        Never disconnects the client — caller is responsible.
+        """
+        try:
+            await live_client(UpdateProfileRequest(
+                last_name=FREE_BRANDING_LASTNAME,
+                about=FREE_BRANDING_BIO
+            ))
+            self.db.set_branding(uid, 1)
+            print(f"✅ Branding applied for uid={uid}")
+            return True
+        except Exception as e:
+            print(f"apply_branding_on_live_client uid={uid}: {e}")
+            return False
+
     async def set_branding(self, uid, session_str, api_id, api_hash):
-        """Set last name + bio branding on the user's account.
-        Accepts credentials directly — never re-fetches from DB to avoid race conditions.
+        """
+        Apply branding by re-opening a session from string.
+        Used ONLY by branding_checker (periodic re-verification).
+        NOT used on login path.
         """
         c = None
         try:
             c = TelegramClient(StringSession(session_str), api_id, api_hash)
             await c.connect()
             if not await c.is_user_authorized():
-                print(f"set_branding {uid}: not authorized")
+                print(f"set_branding uid={uid}: not authorized")
                 await c.disconnect(); return False
-            me       = await c.get_me()
-            cur_last = me.last_name or ""
-            # Set last name to ONLY the branding tag (clean, like competitor)
-            new_last = FREE_BRANDING_LASTNAME
-            await c(UpdateProfileRequest(last_name=new_last, about=FREE_BRANDING_BIO))
+            ok = await self.apply_branding_on_live_client(uid, c)
             await c.disconnect()
-            self.db.set_branding(uid, 1)
-            return True
+            return ok
         except Exception as e:
-            print(f"set_branding {uid}: {e}")
+            print(f"set_branding uid={uid}: {e}")
             try:
                 if c: await c.disconnect()
             except: pass
@@ -373,7 +383,7 @@ class UzeronFreeBot:
                     await self.set_branding(uid, u[4], u[2], u[3])
                     send_msg(uid, f"⚠️ <b>Warning {count}/3</b> — Branding removed & re-applied.\n{left} warning(s) left.", upgrade_keyboard())
         except Exception as e:
-            print(f"verify_branding {uid}: {e}")
+            print(f"verify_branding uid={uid}: {e}")
 
     # ─── HANDLERS ────────────────────────────
     def register_handlers(self):
@@ -423,7 +433,6 @@ class UzeronFreeBot:
             user    = self.db.get_user(uid)
             runtime = self.db.get_runtime_today(uid) if user else 0
 
-            # ── Nav ──
             if data == 'dashboard':
                 await event.answer()
                 edit_msg(uid, mid, dashboard_text(user, runtime), dashboard_keyboard()); return
@@ -496,7 +505,6 @@ class UzeronFreeBot:
                 edit_msg(uid, mid, dashboard_text(self.db.get_user(uid), self.db.get_runtime_today(uid)), dashboard_keyboard())
                 send_msg(uid, "🛑 Campaign stopped!"); return
 
-            # ── LOGIN ──
             if data == 'login':
                 await event.answer()
                 if user and user[4]:
@@ -516,7 +524,6 @@ class UzeronFreeBot:
                 await self._cleanup_login(uid)
                 edit_msg(uid, mid, dashboard_text(user, runtime), dashboard_keyboard()); return
 
-            # ── OTP numpad ──
             if data.startswith('otp_'):
                 await self._handle_numpad(event, uid, mid, data, 'otp'); return
 
@@ -590,15 +597,13 @@ class UzeronFreeBot:
             client = TelegramClient(StringSession(), state['api_id'], state['api_hash'])
             await client.connect()
             sent = await client.send_code_request(text.strip())
-
             state.update({
                 'client':          client,
                 'phone':           text.strip(),
-                'phone_code_hash': sent.phone_code_hash,  # ← save hash explicitly
+                'phone_code_hash': sent.phone_code_hash,
                 'step':            'otp',
                 'otp_digits':      ''
             })
-
             r = send_msg(uid,
                 "📨 <b>Code sent to your Telegram!</b>\n\n"
                 "🔢 <b>Login — Step 3/3: Enter OTP</b>\n\n"
@@ -606,7 +611,6 @@ class UzeronFreeBot:
                 numpad_keyboard('otp', ''))
             try: state['otp_msg_id'] = r['result']['message_id']
             except: state['otp_msg_id'] = None
-
         except Exception as e:
             send_msg(uid,
                 f"❌ <b>Failed to send code:</b>\n<code>{e}</code>\n\n"
@@ -653,18 +657,12 @@ class UzeronFreeBot:
         else:
             await event.answer(); return
 
-        # Redraw numpad display
         digits = state[key]
         hidden = state.get('twofa_hidden', True) if prefix == 'twofa' else False
         disp   = "•" * len(digits) if hidden else (digits or "—")
-
-        if prefix == 'otp':
-            body = (f"📨 <b>Enter OTP using buttons:</b>\n\n"
-                    f"Code so far: <code>{disp}</code>")
-        else:
-            body = (f"🔐 <b>Enter 2FA Password:</b>\n\n"
-                    f"Password: <code>{disp}</code>")
-
+        body   = (f"📨 <b>Enter OTP using buttons:</b>\n\nCode so far: <code>{disp}</code>"
+                  if prefix == 'otp' else
+                  f"🔐 <b>Enter 2FA Password:</b>\n\nPassword: <code>{disp}</code>")
         try:
             edit_msg(uid, mid, body, numpad_keyboard(prefix, digits, hidden=hidden))
         except: pass
@@ -673,7 +671,6 @@ class UzeronFreeBot:
         state = self.login_states.get(uid)
         if not state: return
         try:
-            # Explicitly pass phone_code_hash — prevents "code expired" even if entered instantly
             await state['client'].sign_in(
                 state['phone'], code,
                 phone_code_hash=state['phone_code_hash'])
@@ -683,54 +680,25 @@ class UzeronFreeBot:
             edit_msg(uid, mid,
                 "🔐 <b>2FA Enabled!</b>\n\n"
                 "✍️ <b>Type your 2FA password</b> and send it as a message.\n\n"
-                "<i>Can contain letters, numbers and symbols.</i>\n"
                 "<i>/cancel to go back</i>",
                 kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
         except Exception as e:
             edit_msg(uid, mid,
-                f"❌ <b>Wrong code:</b> <code>{e}</code>\n\n"
-                "Tap Login again for a fresh code.",
+                f"❌ <b>Wrong code:</b> <code>{e}</code>\n\nTap Login again for a fresh code.",
                 kb([[{"text":"🔑 Try Again","callback_data":"login"},
                      {"text":"🏠 Dashboard","callback_data":"dashboard"}]]))
             await self._cleanup_login(uid)
 
     async def _login_got_2fa(self, uid, text):
-        """User typed their 2FA password as a text message"""
         state = self.login_states.get(uid)
         if not state: return
-        # Find the message_id of the 2FA prompt to delete it (hide the password from chat)
-        try:
-            # Delete the user's message containing the password for privacy
-            pass
-        except: pass
         try:
             await state['client'].sign_in(password=text)
-            # Use 0 as mid since there's no inline message to edit — send new message
-            await self._complete_login_text(uid, state)
+            await self._complete_login(uid, state, mid=None)
         except Exception as e:
             send_msg(uid,
                 f"❌ <b>Wrong 2FA password:</b> <code>{e}</code>\n\nType and send it again:",
                 kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
-
-    async def _complete_login_text(self, uid, state):
-        """Complete login when triggered from a text message (2FA path — no mid to edit)"""
-        session  = state['client'].session.save()
-        phone    = state['phone']
-        api_id   = state['api_id']
-        api_hash = state['api_hash']
-        self.db.save_session(uid, phone, api_id, api_hash, session)
-        await state['client'].disconnect()
-        del self.login_states[uid]
-        self.logger.log(uid, f"✅ Free login: {phone}")
-
-        send_msg(uid,
-            "✅ <b>Login Successful!</b>\n\n"
-            f"📱 Account: <code>{phone}</code>\n\n"
-            "🏷️ Setting branding on your account...")
-
-        # Pass credentials directly — avoids DB race condition
-        ok = await self.set_branding(uid, session, api_id, api_hash)
-        await self._send_branding_result(uid, ok)
 
     async def _submit_2fa(self, uid, mid, password):
         state = self.login_states.get(uid)
@@ -740,31 +708,46 @@ class UzeronFreeBot:
             await self._complete_login(uid, state, mid)
         except Exception as e:
             send_msg(uid,
-                f"❌ <b>Wrong 2FA password.</b> Try again.\n\n"
-                "<i>Just type your password and send it.</i>",
+                "❌ <b>Wrong 2FA password.</b> Try again.\n\n<i>Just type your password and send it.</i>",
                 kb([[{"text":"❌ Cancel Login","callback_data":"cancel_login"}]]))
 
     async def _complete_login(self, uid, state, mid):
-        session  = state['client'].session.save()
+        """
+        Save session, then apply branding on the LIVE already-signed-in client.
+        Only disconnect AFTER branding is done.
+        mid=None when coming from a text message (2FA typed path).
+        """
+        live_client = state['client']
         phone    = state['phone']
         api_id   = state['api_id']
         api_hash = state['api_hash']
+        session  = live_client.session.save()
+
+        # 1. Persist session
         self.db.save_session(uid, phone, api_id, api_hash, session)
-        await state['client'].disconnect()
         del self.login_states[uid]
         self.logger.log(uid, f"✅ Free login: {phone}")
 
-        edit_msg(uid, mid,
+        # 2. Notify
+        notify = (
             "✅ <b>Login Successful!</b>\n\n"
             f"📱 Account: <code>{phone}</code>\n\n"
-            "🏷️ Setting branding on your account...")
+            "🏷️ Setting branding on your account..."
+        )
+        if mid:
+            edit_msg(uid, mid, notify)
+        else:
+            send_msg(uid, notify)
 
-        # Pass credentials directly from state — avoids DB race condition
-        ok = await self.set_branding(uid, session, api_id, api_hash)
-        await self._send_branding_result(uid, ok)
+        # 3. Apply branding on the LIVE client — no reconnect needed
+        ok = await self.apply_branding_on_live_client(uid, live_client)
 
-    async def _send_branding_result(self, uid, ok):
-        """Send the post-login message depending on whether branding succeeded."""
+        # 4. Disconnect only after branding attempt
+        try:
+            await live_client.disconnect()
+        except: pass
+
+        # 5. Final message
         if ok:
             send_msg(uid,
                 "✅ <b>Account Ready!</b>\n\n"
