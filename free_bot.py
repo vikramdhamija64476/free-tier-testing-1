@@ -29,7 +29,6 @@ SUPPORT_LINK      = "https://t.me/Uzeron_Ads_support"
 CONTACT_USERNAME  = "@Pandaysubscription"
 PREMIUM_BOT       = "@Uzeron_AdsBot"
 
-# Exact usernames (no @) — used for getChatMember
 CHANNEL_USERNAME   = "Uzeron_AdsBot"
 COMMUNITY_USERNAME = "UzeronCommunity"
 
@@ -73,41 +72,37 @@ def edit_msg(chat_id, msg_id, text, keyboard=None):
 def kb(buttons):
     return {"inline_keyboard": buttons}
 
+# ── Send log to user via LOGGER bot ────────────────────────────────────────
+def user_log(user_id, text):
+    """Send a log message to the user via the LOGGER bot token.
+    User must have started the logger bot first (/start on it).
+    Errors are silently ignored — logging should never break the main flow."""
+    try:
+        _bot("sendMessage", {
+            "chat_id": user_id,
+            "text": text,
+            "parse_mode": "HTML"
+        }, token=LOGGER_BOT_TOKEN)
+    except Exception as e:
+        print(f"user_log uid={user_id}: {e}")
+
 # ═══════════════════════════════════════════════════════════════════════════
 # MEMBERSHIP CHECK
 # ═══════════════════════════════════════════════════════════════════════════
 def check_member(user_id, chat_username):
-    """
-    Returns (is_member: bool, error: str|None)
-    
-    IMPORTANT NOTES on getChatMember:
-    - For PUBLIC channels: works without bot being admin
-    - For PUBLIC groups: works without bot being admin  
-    - For PRIVATE channels/groups: bot MUST be admin with correct permissions
-    - If user is NOT a member of a channel, Telegram returns status="left" 
-      NOT an error — so we must check the status field
-    - If the chat doesn't exist or bot has no access, it returns ok=False
-    """
     r = _bot("getChatMember", {
         "chat_id": f"@{chat_username}",
         "user_id": user_id
     })
-    
     print(f"getChatMember @{chat_username} uid={user_id}: {r}")
-    
     if not r.get("ok"):
         err = r.get("description", "unknown error")
         return False, err
-    
     status = r.get("result", {}).get("status", "left")
     is_member = status in ("member", "administrator", "creator", "restricted")
     return is_member, None
 
 def user_has_joined(user_id):
-    """
-    Returns (channel_ok, community_ok, channel_err, community_err)
-    All errors are None if no error occurred.
-    """
     ch_ok,  ch_err  = check_member(user_id, CHANNEL_USERNAME)
     com_ok, com_err = check_member(user_id, COMMUNITY_USERNAME)
     return ch_ok, com_ok, ch_err, com_err
@@ -393,7 +388,6 @@ class UzeronFreeBot:
         self.pending_message      = {}
         self.login_states         = {}
         self.broadcast_state      = {}
-        # Cache: uid -> True/False so passing users don't re-check every callback
         self._join_cache          = {}
 
     async def start(self):
@@ -411,48 +405,24 @@ class UzeronFreeBot:
 
     # ─── FORCE-JOIN ───────────────────────────────────────────────────────
     def _check_join(self, uid):
-        """
-        Returns (all_joined: bool, missing: list[str], has_api_error: bool)
-        
-        If getChatMember returns an API error (not a "user not found" error),
-        it means the bot can't check — we SKIP the gate (fail open) so the
-        bot doesn't permanently block users due to a config issue.
-        """
-        # Admins always pass
         if uid in ADMINS:
             return True, [], False
-
-        # Use cache for users who already passed
         if self._join_cache.get(uid):
             return True, [], False
-
         missing = []
         has_api_error = False
-
-        ch_ok, ch_err = check_member(uid, CHANNEL_USERNAME)
+        ch_ok, ch_err   = check_member(uid, CHANNEL_USERNAME)
         com_ok, com_err = check_member(uid, COMMUNITY_USERNAME)
-
-        # If BOTH checks return API errors (bot not admin, chat not found, etc.)
-        # fail open — don't block the user
         if ch_err and com_err:
-            print(f"WARNING: Both membership checks failed for uid={uid}. "
-                  f"ch_err={ch_err!r} com_err={com_err!r} — failing open")
+            print(f"WARNING: Both membership checks failed uid={uid}. Failing open.")
             self._join_cache[uid] = True
             return True, [], True
-
         if not ch_ok:
-            if ch_err:
-                # API error on channel — can't check, skip it
-                print(f"WARNING: Channel check error uid={uid}: {ch_err!r} — skipping channel gate")
-            else:
-                missing.append("📢 Updates Channel")
-
+            if ch_err: print(f"WARNING: Channel check error uid={uid}: {ch_err!r} — skipping")
+            else: missing.append("📢 Updates Channel")
         if not com_ok:
-            if com_err:
-                print(f"WARNING: Community check error uid={uid}: {com_err!r} — skipping community gate")
-            else:
-                missing.append("👥 Community Group")
-
+            if com_err: print(f"WARNING: Community check error uid={uid}: {com_err!r} — skipping")
+            else: missing.append("👥 Community Group")
         all_joined = len(missing) == 0
         if all_joined:
             self._join_cache[uid] = True
@@ -518,12 +488,14 @@ class UzeronFreeBot:
                     if uid in self.tasks: self.tasks[uid].cancel(); del self.tasks[uid]
                     self.db.set_campaign_status(uid, 0)
                     send_msg(uid, "🚫 <b>Banned!</b> Branding removed 3× — upgrade to continue.", upgrade_keyboard())
+                    user_log(uid, "🚫 <b>Account banned</b> — branding removed 3 times.")
                 else:
                     u = self.db.get_user(uid)
                     await self.set_branding(uid, u[4], u[2], u[3])
                     send_msg(uid,
                         f"⚠️ <b>Warning {count}/3</b> — branding removed & re-applied.\n"
                         f"{left} warning(s) left before ban.", upgrade_keyboard())
+                    user_log(uid, f"⚠️ Branding warning {count}/3 — re-applied automatically.")
         except Exception as e:
             print(f"verify_branding uid={uid}: {e}")
 
@@ -563,6 +535,7 @@ class UzeronFreeBot:
                 if uid in self.tasks: self.tasks[uid].cancel(); del self.tasks[uid]
                 await event.reply(f"✅ Banned {uid}")
                 send_msg(uid, f"🚫 Banned. Contact {CONTACT_USERNAME}", upgrade_keyboard())
+                user_log(uid, f"🚫 Your account has been banned by admin.")
             except: await event.reply("❌ Usage: /ban USER_ID")
 
         @self.bot.on(events.NewMessage(pattern='/stats'))
@@ -583,7 +556,6 @@ class UzeronFreeBot:
 
         @self.bot.on(events.NewMessage(pattern='/checkjoin'))
         async def h_checkjoin(event):
-            """Admin debug command to test membership check."""
             if event.sender_id not in ADMINS: return
             uid = event.sender_id
             ch_ok, ch_err  = check_member(uid, CHANNEL_USERNAME)
@@ -605,12 +577,9 @@ class UzeronFreeBot:
             if self.db.is_banned(uid):
                 send_msg(uid, "🚫 You are banned.", upgrade_keyboard()); return
             self.db.register_user(uid, event.sender.username)
-
-            # Force-join gate
             all_joined, missing, api_error = self._check_join(uid)
             if not all_joined:
                 send_msg(uid, force_join_text(missing), force_join_keyboard()); return
-
             send_msg(uid, welcome_text(), welcome_keyboard())
 
         @self.bot.on(events.CallbackQuery())
@@ -625,10 +594,8 @@ class UzeronFreeBot:
             user    = self.db.get_user(uid)
             runtime = self.db.get_runtime_today(uid) if user else 0
 
-            # ── Force-join "I've Joined" button ──────────────────────────
             if data == 'check_join':
                 await event.answer()
-                # Clear cache so we re-check fresh
                 self._join_cache.pop(uid, None)
                 all_joined, missing, api_error = self._check_join(uid)
                 if all_joined:
@@ -637,14 +604,12 @@ class UzeronFreeBot:
                     edit_msg(uid, mid, force_join_text(missing), force_join_keyboard())
                 return
 
-            # ── All other callbacks: check join (use cache) ───────────────
             all_joined, missing, api_error = self._check_join(uid)
             if not all_joined:
                 await event.answer("❌ Join channel & community first!", alert=True)
                 edit_msg(uid, mid, force_join_text(missing), force_join_keyboard())
                 return
 
-            # ── Dashboard & nav ───────────────────────────────────────────
             if data == 'dashboard':
                 await event.answer()
                 edit_msg(uid, mid, dashboard_text(user, runtime), dashboard_keyboard()); return
@@ -691,9 +656,15 @@ class UzeronFreeBot:
             if data == 'logout':
                 await event.answer()
                 if uid in self.tasks: self.tasks[uid].cancel(); del self.tasks[uid]
+                phone = user[1] if user and user[1] else "unknown"
                 self.db.logout_user(uid)
                 edit_msg(uid, mid, dashboard_text(self.db.get_user(uid), 0), dashboard_keyboard())
-                send_msg(uid, "✅ Logged out successfully!"); return
+                send_msg(uid, "✅ Logged out successfully!")
+                user_log(uid,
+                    f"🚪 <b>Account logged out</b>\n"
+                    f"📱 Phone: <code>{phone}</code>\n"
+                    f"🕐 Time: {datetime.now(IST).strftime('%d %b %Y %I:%M %p IST')}")
+                return
 
             if data == 'startcampaign':
                 await event.answer()
@@ -712,7 +683,12 @@ class UzeronFreeBot:
                 send_msg(uid,
                     f"🚀 <b>Campaign Started!</b>\n\n"
                     f"📊 {FREE_MAX_GROUPS} groups  |  ⏱️ {FREE_MSG_DELAY}s  |  "
-                    f"🔄 {FREE_CYCLE_DELAY//60}m cycle  |  ⏳ 8h daily"); return
+                    f"🔄 {FREE_CYCLE_DELAY//60}m cycle  |  ⏳ 8h daily")
+                user_log(uid,
+                    f"🚀 <b>Campaign Started</b>\n"
+                    f"📱 Account: <code>{user[1]}</code>\n"
+                    f"🕐 Time: {datetime.now(IST).strftime('%d %b %Y %I:%M %p IST')}")
+                return
 
             if data == 'stopcampaign':
                 await event.answer()
@@ -720,13 +696,20 @@ class UzeronFreeBot:
                     send_msg(uid, "⚠️ No campaign running!"); return
                 self.db.set_campaign_status(uid, 0)
                 self.tasks[uid].cancel(); del self.tasks[uid]
+                elapsed = 0
                 if uid in self.campaign_start_times:
                     elapsed = (datetime.now()-self.campaign_start_times[uid]).total_seconds()
                     self.db.add_runtime(uid, int(elapsed)); del self.campaign_start_times[uid]
                 edit_msg(uid, mid,
                     dashboard_text(self.db.get_user(uid), self.db.get_runtime_today(uid)),
                     dashboard_keyboard())
-                send_msg(uid, "🛑 <b>Campaign Stopped!</b>"); return
+                send_msg(uid, "🛑 <b>Campaign Stopped!</b>")
+                user_log(uid,
+                    f"🛑 <b>Campaign Stopped</b>\n"
+                    f"📱 Account: <code>{user[1] if user and user[1] else 'N/A'}</code>\n"
+                    f"⏱️ Session runtime: {elapsed/3600:.1f}h\n"
+                    f"🕐 Time: {datetime.now(IST).strftime('%d %b %Y %I:%M %p IST')}")
+                return
 
             if data == 'login':
                 await event.answer()
@@ -919,11 +902,17 @@ class UzeronFreeBot:
         if mid: edit_msg(uid, mid, notify)
         else:   send_msg(uid, notify)
 
-        # Apply branding on the LIVE still-connected client
         ok = await self.apply_branding_on_live_client(uid, live_client)
 
         try: await live_client.disconnect()
         except: pass
+
+        # Log to user via logger bot
+        user_log(uid,
+            f"✅ <b>Account Added Successfully</b>\n"
+            f"📱 Phone: <code>{phone}</code>\n"
+            f"🏷️ Branding: {'✅ Applied' if ok else '⚠️ Failed — add manually'}\n"
+            f"🕐 Time: {datetime.now(IST).strftime('%d %b %Y %I:%M %p IST')}")
 
         if ok:
             send_msg(uid,
@@ -944,10 +933,12 @@ class UzeronFreeBot:
     async def run_campaign(self, uid):
         try:
             user   = self.db.get_user(uid)
+            phone  = user[1]
             client = TelegramClient(StringSession(user[4]), user[2], user[3])
             await client.connect()
             if not await client.is_user_authorized():
                 send_msg(uid, "❌ Session expired. Please logout and login again.")
+                user_log(uid, f"❌ Session expired for <code>{phone}</code> — please re-login.")
                 self.db.set_campaign_status(uid, 0); await client.disconnect(); return
 
             dialogs = await client.get_dialogs()
@@ -969,10 +960,15 @@ class UzeronFreeBot:
                     self.db.add_runtime(uid, int(elapsed_session))
                     if uid in self.campaign_start_times: del self.campaign_start_times[uid]
                     send_msg(uid, "⏰ <b>8h Daily Limit Reached!</b>\n\nResumes tomorrow.", upgrade_keyboard())
+                    user_log(uid,
+                        f"⏰ <b>Daily limit reached</b>\n"
+                        f"📱 <code>{phone}</code> — 8h used today. Resumes tomorrow.")
                     break
+
                 round_num += 1
                 sent = failed = 0
                 msg  = self.db.get_user(uid)[5]
+
                 for group in groups:
                     if not self.db.get_user(uid)[6]: break
                     elapsed = (datetime.now()-campaign_start).total_seconds()
@@ -980,18 +976,36 @@ class UzeronFreeBot:
                     try:
                         await client.send_message(group.entity, msg)
                         sent += 1
+                        # ── Per-message log to user ──
+                        user_log(uid,
+                            f"[<code>{phone}</code>] "
+                            f"[✓] Sent to <b>{group.name}</b> ({group.entity.id})")
                         await asyncio.sleep(FREE_MSG_DELAY)
                     except FloodWaitError as e:
                         send_msg(uid, f"⚠️ FloodWait {e.seconds}s — pausing…")
+                        user_log(uid, f"[<code>{phone}</code>] ⚠️ FloodWait {e.seconds}s")
                         await asyncio.sleep(e.seconds)
-                    except Exception:
-                        failed += 1; await asyncio.sleep(10)
+                    except Exception as ex:
+                        failed += 1
+                        # ── Per-message fail log to user ──
+                        user_log(uid,
+                            f"[<code>{phone}</code>] "
+                            f"[✗] Failed to <b>{group.name}</b> ({group.entity.id}): {ex}")
+                        await asyncio.sleep(10)
+
                 hl = max(0, 8-(runtime+elapsed_session)/3600)
+                now_str = datetime.now(IST).strftime('%d %b %Y %I:%M %p IST')
                 send_msg(uid,
                     f"📊 <b>Round {round_num}</b> — ✅ {sent}  ❌ {failed}\n"
                     f"⏳ {hl:.1f}h left  |  Next in {FREE_CYCLE_DELAY//60}m",
                     kb([[{"text":"🛑 Stop","callback_data":"stopcampaign"},
                          {"text":"💎 Upgrade","callback_data":"upgrade"}]]))
+                user_log(uid,
+                    f"📊 <b>Round {round_num} complete</b>\n"
+                    f"📱 <code>{phone}</code>\n"
+                    f"✅ Sent: {sent}  ❌ Failed: {failed}\n"
+                    f"⏳ {hl:.1f}h left today\n"
+                    f"🕐 {now_str}")
                 await asyncio.sleep(FREE_CYCLE_DELAY)
 
             await client.disconnect()
@@ -1000,10 +1014,15 @@ class UzeronFreeBot:
             if uid in self.campaign_start_times:
                 elapsed = (datetime.now()-self.campaign_start_times[uid]).total_seconds()
                 self.db.add_runtime(uid, int(elapsed)); del self.campaign_start_times[uid]
+            user_log(uid,
+                f"🛑 <b>Campaign stopped</b>\n"
+                f"📱 <code>{self.db.get_user(uid)[1] if self.db.get_user(uid) else 'N/A'}</code>\n"
+                f"🕐 {datetime.now(IST).strftime('%d %b %Y %I:%M %p IST')}")
         except Exception as e:
             self.db.set_campaign_status(uid, 0)
             if uid in self.tasks: del self.tasks[uid]
             send_msg(uid, f"❌ Campaign error: <code>{e}</code>")
+            user_log(uid, f"❌ <b>Campaign error</b>\n<code>{e}</code>")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # MAIN
